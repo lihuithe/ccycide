@@ -61,7 +61,7 @@ jobs:
             exit 1
           fi
           version="${TAG#v}"
-          if [[ "$version" == *-* ]]; then prerelease=true; channel=beta; else prerelease=false; channel=stable; fi
+          if [[ "$version" == *-* || "$version" == 0.* ]]; then prerelease=true; channel=beta; else prerelease=false; channel=stable; fi  # 0.x 视为测试版
           {
             echo "tag=$TAG"
             echo "version=$version"
@@ -74,12 +74,19 @@ jobs:
           VERSION: ${{ steps.meta.outputs.version }}
         run: bash scripts/release-prepare.sh --expect "$VERSION"
 
-      - name: 检查 Tauri 配置里没有遗留的占位值
+      - name: 检查 updater 公钥与服务器地址
+        env:
+          API_URL: ${{ vars.RTERM_API_URL }}
         run: |
           set -euo pipefail
           conf=apps/desktop/src-tauri/tauri.conf.json
-          if grep -nE 'REPLACE_WITH|api\.example\.com' "$conf"; then
-            echo "::error file=$conf::updater 的 pubkey 或 endpoints 还是占位值，发布出去的客户端将无法更新"
+          if grep -n 'REPLACE_WITH' "$conf"; then
+            echo "::error file=$conf::updater 的 pubkey 还是占位值"
+            exit 1
+          fi
+          # 服务器地址不写进仓库：放在仓库变量 RTERM_API_URL，构建时注入安装包和 updater 端点
+          if [[ ! "$API_URL" =~ ^https:// ]]; then
+            echo "::error::请先设置仓库变量 RTERM_API_URL（https:// 开头），例如 gh variable set RTERM_API_URL --body https://<API 域名>"
             exit 1
           fi
 
@@ -155,6 +162,8 @@ jobs:
             config_args: --config src-tauri/tauri.bundle.conf.json
     env:
       MACOSX_DEPLOYMENT_TARGET: '11.0'
+      # 内置的默认服务器地址（编译时写入，见 crates/rterm-core/src/core.rs 的 DEFAULT_API_URL）
+      RTERM_DEFAULT_API_URL: ${{ vars.RTERM_API_URL }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -237,6 +246,15 @@ jobs:
           [IO.File]::WriteAllText($confPath, $conf)
           "TAURI_SIGN_ARGS=--config $($confPath -replace '\\','/')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      # updater 端点同样来自仓库变量，仓库里的 tauri.conf.json 只放占位
+      - name: 生成 updater 端点配置
+        shell: bash
+        run: |
+          set -euo pipefail
+          f="$RUNNER_TEMP/tauri-endpoint.json"
+          printf '{"plugins":{"updater":{"endpoints":["%s/v1/update/{{target}}/{{arch}}/{{current_version}}"]}}}' "$RTERM_DEFAULT_API_URL" > "$f"
+          echo "TAURI_ENDPOINT_ARGS=--config ${f//\\//}" >> "$GITHUB_ENV"
+
       - name: 构建并上传到草稿 Release
         if: matrix.offline != true
         uses: tauri-apps/tauri-action@v0
@@ -263,7 +281,7 @@ jobs:
           releaseDraft: true
           prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
           includeUpdaterJson: true
-          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} ${{ matrix.config_args }} ${{ env.TAURI_SIGN_ARGS }}
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} ${{ matrix.config_args }} ${{ env.TAURI_SIGN_ARGS }} ${{ env.TAURI_ENDPOINT_ARGS }}
 
       # 离线 WebView2 安装包：不走 tauri-action（避免与普通安装包同名冲突），构建后改名再上传
       - name: 构建离线 WebView2 安装包
@@ -283,7 +301,7 @@ jobs:
           set -euo pipefail
           offline='{"bundle":{"createUpdaterArtifacts":false,"windows":{"webviewInstallMode":{"type":"offlineInstaller"}}}}'
           # shellcheck disable=SC2086
-          npm run tauri build -- --target "$TARGET" --bundles nsis ${{ matrix.config_args }} ${TAURI_SIGN_ARGS:-} --config "$offline"
+          npm run tauri build -- --target "$TARGET" --bundles nsis ${{ matrix.config_args }} ${TAURI_SIGN_ARGS:-} ${TAURI_ENDPOINT_ARGS:-} --config "$offline"
           shopt -s nullglob
           for f in ../../target/"$TARGET"/release/bundle/nsis/*-setup.exe; do
             out="${f%-setup.exe}-offline-setup.exe"
@@ -316,6 +334,7 @@ jobs:
           - { target: aarch64-apple-darwin,       os: macos-latest,   zig: false, ext: tar.gz }
     env:
       MACOSX_DEPLOYMENT_TARGET: '11.0'
+      RTERM_DEFAULT_API_URL: ${{ vars.RTERM_API_URL }}
     steps:
       - uses: actions/checkout@v4
         with:
