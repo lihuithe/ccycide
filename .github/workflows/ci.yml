@@ -1,0 +1,239 @@
+# 持续集成：每次 push / PR 都跑（实现方案 12.2；开发指南 T33）
+# 本机等价命令：scripts/ci-local.ps1
+name: CI
+
+on:
+  push:
+    branches: ['**']
+    tags-ignore: ['v*']   # 打标签由 release.yml 负责
+  pull_request:
+
+# 同一分支上有新提交时取消还在跑的旧任务
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+  RUST_BACKTRACE: '1'
+
+jobs:
+  # ---------- Rust：fmt / clippy / test，三平台 ----------
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-22.04]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Tauri 的 Linux 系统依赖（开发指南 2.2）
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl wget file libssl-dev pkg-config \
+            libwebkit2gtk-4.1-dev libxdo-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # 缓存 ~/.cargo 的注册表与 target 目录，键里包含 Cargo.lock 的哈希
+      - uses: Swatinem/rust-cache@v2
+
+      # tauri-build 编译时会校验 frontendDist 目录存在；检查和测试不需要真实前端产物
+      - name: 建立空的 frontendDist
+        shell: bash
+        run: mkdir -p apps/desktop/dist
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # 默认不跑 #[ignore] 的测试：它们需要真实钥匙串、已登录的 Claude Code、或手动启动的开发服务器
+      - name: cargo test
+        run: cargo test --workspace
+
+  # ---------- 依赖审计（不阻塞合并，但会在日志和摘要里提示） ----------
+  audit:
+    name: 依赖审计
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: cargo audit
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
+
+      - name: npm audit（服务端，只看生产依赖）
+        working-directory: server
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: npm audit（桌面前端，只看生产依赖）
+        working-directory: apps/desktop
+        run: npm audit --omit=dev --audit-level=high
+
+  # ---------- 前端：tsc / eslint / vitest / build ----------
+  desktop-frontend:
+    name: 前端 (apps/desktop)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - run: npm ci
+
+      - name: tsc
+        run: npm run typecheck
+
+      - name: eslint
+        run: npm run lint
+
+      - name: vitest
+        run: npm test
+
+      - name: build
+        run: npm run build
+
+  # ---------- 服务端：tsc / vitest（内存实现，无外部依赖） ----------
+  server:
+    name: 服务端 (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]    # engines 要求 >=22；Docker 镜像用 24
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - run: npm ci
+
+      - name: tsc（含 test 与 tools）
+        run: npm run typecheck
+
+      - name: 编译（与 Docker 镜像相同的 tsc 构建）
+        run: npm run build
+
+      # 不设置 TEST_MYSQL_URL，mysql.test.ts 会自动跳过；其余测试用内存实现
+      - name: vitest
+        run: npm test
+
+  # ---------- 服务端集成：真实 MySQL 8.4 + Redis 7 ----------
+  server-integration:
+    name: 服务端集成 (MySQL 8.4 + Redis 7)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: ci
+          MYSQL_DATABASE: rterm
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pci --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+          --health-start-period=20s
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=10
+    env:
+      # 约定见 server/test/mysql.test.ts：设置后才执行 MySQL 集成用例；数据库必须已存在，迁移由测试自己执行
+      TEST_MYSQL_URL: mysql://root:ci@127.0.0.1:3306/rterm
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - run: npm ci
+
+      - name: MySQL 集成测试（test/mysql.test.ts）
+        run: npx vitest run test/mysql.test.ts
+
+      # 现有 Redis 测试用 ioredis-mock；这里再用真实 Redis 起一遍产物，防止“mock 能过、真 Redis 不行”
+      - name: 构建
+        run: npm run build
+
+      - name: 迁移 + 以 MySQL/Redis 启动并冒烟（编译产物，与镜像入口一致）
+        env:
+          NODE_ENV: production
+          STORE: mysql
+          MYSQL_URL: mysql://root:ci@127.0.0.1:3306/rterm_smoke
+          REDIS_URL: redis://127.0.0.1:6379/0
+          TICKET_SECRET: ci-ticket-secret-0123456789abcdef
+          ADMIN_TOKEN: ci-admin-token
+          PORT: '18080'
+          LOG_LEVEL: warn
+        run: |
+          set -euo pipefail
+          mysql_exec() { docker exec "$(docker ps -q --filter ancestor=mysql:8.4 | head -n1)" mysql -uroot -pci -e "$1"; }
+          mysql_exec "CREATE DATABASE IF NOT EXISTS rterm_smoke CHARACTER SET utf8mb4"
+          node dist/migrate.js
+          node dist/main-signal.js > signal.log 2>&1 &
+          pid=$!
+          trap 'kill $pid 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18080/v1/healthz; then ok=1; break; fi
+            sleep 1
+          done
+          [ "${ok:-0}" = 1 ] || { echo '信令未能启动：'; cat signal.log; exit 1; }
+          echo
+          # 管理接口带令牌可访问，说明 Redis 限流器与 MySQL 仓储都在工作
+          curl -fsS -H "Authorization: Bearer ci-admin-token" http://127.0.0.1:18080/v1/admin/stats
+          echo
+          # 不带令牌必须被拒
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/v1/admin/stats)
+          [ "$code" = 401 ] || { echo "期望 401，实际 $code"; exit 1; }

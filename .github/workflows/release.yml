@@ -1,0 +1,603 @@
+# 发布流水线：推送 v* 标签触发（实现方案第 12 章；开发指南 T33、T34）。完整说明见 docs/发布流程.md。
+#
+# 流程：prepare（校验版本、建草稿 Release）
+#        ├─ desktop       Tauri 桌面包（Windows / macOS 通用 / Linux），签名并产出 updater 签名文件与 latest.json
+#        ├─ cli           rterm-cli（Linux musl 静态 x86_64/aarch64、Windows、macOS）
+#        └─ server-image  rterm-server 镜像推送到 GHCR（amd64 + arm64）
+#      → publish（需要审批：签 CLI 包、生成 SHA256SUMS、公开 Release）
+#      → update-server（可选：向更新服务器登记版本，默认 5% 灰度）
+#
+# 重跑：Actions 页面手动运行本工作流并填入已有的 tag（草稿 Release 会被复用，资产同名覆盖）。
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 要发布的已有 tag，例如 v0.2.0
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+
+jobs:
+  # ---------------------------------------------------------------- 准备
+  prepare:
+    name: 校验版本并创建草稿 Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      channel: ${{ steps.meta.outputs.channel }}
+      release_id: ${{ steps.release.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+
+      - name: 解析 tag
+        id: meta
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::tag「$TAG」不是 vMAJOR.MINOR.PATCH[-预发布标识] 格式"
+            exit 1
+          fi
+          version="${TAG#v}"
+          if [[ "$version" == *-* ]]; then prerelease=true; channel=beta; else prerelease=false; channel=stable; fi
+          {
+            echo "tag=$TAG"
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+            echo "channel=$channel"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: 版本号一致性（Cargo / package.json / tauri.conf 必须都等于 tag）
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: bash scripts/release-prepare.sh --expect "$VERSION"
+
+      - name: 检查 Tauri 配置里没有遗留的占位值
+        run: |
+          set -euo pipefail
+          conf=apps/desktop/src-tauri/tauri.conf.json
+          if grep -nE 'REPLACE_WITH|api\.example\.com' "$conf"; then
+            echo "::error file=$conf::updater 的 pubkey 或 endpoints 还是占位值，发布出去的客户端将无法更新"
+            exit 1
+          fi
+
+      - name: 创建（或复用）草稿 Release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          PRERELEASE: ${{ steps.meta.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          id="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[] | select(.tag_name==\"$TAG\") | .id" | head -n1)"
+          if [ -z "$id" ]; then
+            flags=(--draft --title "RTerm $TAG" --generate-notes --verify-tag)
+            [ "$PRERELEASE" = true ] && flags+=(--prerelease)
+            gh release create "$TAG" "${flags[@]}"
+            id="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[] | select(.tag_name==\"$TAG\") | .id" | head -n1)"
+          fi
+          [ -n "$id" ] || { echo "::error::没能取得 Release id"; exit 1; }
+          echo "release_id=$id" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------- 桌面包
+  desktop:
+    name: 桌面包 ${{ matrix.name }}
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            rust_targets: x86_64-pc-windows-msvc
+            bundles: nsis
+            config_args: --config src-tauri/tauri.bundle.conf.json --config src-tauri/tauri.bundle.windows.conf.json
+          # 带完整 WebView2 离线运行库的安装包（LTSC / Server 无网络环境），不产生 updater 产物
+          - name: windows-x64-offline
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            rust_targets: x86_64-pc-windows-msvc
+            bundles: nsis
+            offline: true
+            config_args: --config src-tauri/tauri.bundle.conf.json --config src-tauri/tauri.bundle.windows.conf.json
+          # ARM64 在 x64 的 runner 上交叉编译（runner 镜像自带 ARM64 构建工具；无法运行测试）
+          - name: windows-arm64
+            os: windows-latest
+            target: aarch64-pc-windows-msvc
+            rust_targets: aarch64-pc-windows-msvc
+            bundles: nsis
+            config_args: --config src-tauri/tauri.bundle.conf.json --config src-tauri/tauri.bundle.windows.conf.json
+          - name: macos-universal
+            os: macos-latest
+            target: universal-apple-darwin
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+            bundles: app,dmg    # updater 需要 .app.tar.gz，所以显式带上 app
+            config_args: --config src-tauri/tauri.bundle.conf.json
+          - name: linux-x64
+            os: ubuntu-22.04    # 老发行版上构建，保证 glibc 向后兼容
+            target: x86_64-unknown-linux-gnu
+            rust_targets: x86_64-unknown-linux-gnu
+            bundles: deb,rpm,appimage
+            config_args: --config src-tauri/tauri.bundle.conf.json
+          # 免费的 arm64 Linux runner 仅对公开仓库提供；私有仓库请改成自托管 runner 或删掉这一项
+          - name: linux-arm64
+            os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            rust_targets: aarch64-unknown-linux-gnu
+            bundles: deb,rpm,appimage
+            config_args: --config src-tauri/tauri.bundle.conf.json
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      # Windows 静态链接 C 运行库，用户机器不需要装 VC++ 运行库（实现方案 12.1）。
+      # 只在 Windows 上设置：空的 RUSTFLAGS 也会让 cargo 忽略 .cargo/config.toml 里的 rustflags
+      - name: Windows 静态链接 CRT
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "RUSTFLAGS=-C target-feature=+crt-static" >> "$GITHUB_ENV"
+
+      - name: 安装 Tauri 的 Linux 系统依赖（开发指南 2.2）
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential curl wget file libssl-dev pkg-config \
+            libwebkit2gtk-4.1-dev libxdo-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: desktop-${{ matrix.name }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: 安装前端依赖
+        working-directory: apps/desktop
+        run: npm ci
+
+      # 编译 rterm-cli 并放到 src-tauri/binaries/rterm-cli-<triple>（externalBin），
+      # Windows 再放入固定版本、校验过 SHA256 的 conpty.dll / OpenConsole.exe（src-tauri/resources）
+      - name: 准备 externalBin 与 ConPTY 资源
+        shell: bash
+        run: bash scripts/release-stage-resources.sh --target "${{ matrix.target }}"
+
+      # ---- Windows 代码签名（仓库变量 WINDOWS_SIGN_MODE：pfx | azure；不设置则不签名） ----
+      - name: Windows 签名配置（PFX 证书）
+        if: runner.os == 'Windows' && vars.WINDOWS_SIGN_MODE == 'pfx'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'codesign.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $pass = ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $pass
+          Remove-Item $pfx -Force
+          $conf = @{ bundle = @{ windows = @{
+            certificateThumbprint = $cert.Thumbprint
+            digestAlgorithm = 'sha256'
+            timestampUrl = 'http://timestamp.digicert.com'
+          } } } | ConvertTo-Json -Depth 5
+          $confPath = Join-Path $env:RUNNER_TEMP 'tauri-win-sign.json'
+          [IO.File]::WriteAllText($confPath, $conf)
+          "TAURI_SIGN_ARGS=--config $($confPath -replace '\\','/')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Windows 签名配置（Azure Trusted Signing）
+        if: runner.os == 'Windows' && vars.WINDOWS_SIGN_MODE == 'azure'
+        shell: pwsh
+        env:
+          AZURE_TS_ENDPOINT: ${{ vars.AZURE_TS_ENDPOINT }}
+          AZURE_TS_ACCOUNT: ${{ vars.AZURE_TS_ACCOUNT }}
+          AZURE_TS_PROFILE: ${{ vars.AZURE_TS_PROFILE }}
+        run: |
+          cargo install trusted-signing-cli --locked
+          $conf = @{ bundle = @{ windows = @{ signCommand = @{
+            cmd = 'trusted-signing-cli'
+            args = @('-e', $env:AZURE_TS_ENDPOINT, '-a', $env:AZURE_TS_ACCOUNT, '-c', $env:AZURE_TS_PROFILE, '-d', 'RTerm', '%1')
+          } } } } | ConvertTo-Json -Depth 6
+          $confPath = Join-Path $env:RUNNER_TEMP 'tauri-win-sign.json'
+          [IO.File]::WriteAllText($confPath, $conf)
+          "TAURI_SIGN_ARGS=--config $($confPath -replace '\\','/')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: 构建并上传到草稿 Release
+        if: matrix.offline != true
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # updater 包签名（所有平台）
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # macOS 签名与公证（Developer ID + 应用专用密码方式；其他平台这些变量为空，被忽略）
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Azure Trusted Signing（WINDOWS_SIGN_MODE=azure 时由 trusted-signing-cli 读取）
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        with:
+          projectPath: apps/desktop
+          releaseId: ${{ needs.prepare.outputs.release_id }}
+          tagName: ${{ needs.prepare.outputs.tag }}
+          releaseDraft: true
+          prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
+          includeUpdaterJson: true
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} ${{ matrix.config_args }} ${{ env.TAURI_SIGN_ARGS }}
+
+      # 离线 WebView2 安装包：不走 tauri-action（避免与普通安装包同名冲突），构建后改名再上传
+      - name: 构建离线 WebView2 安装包
+        if: matrix.offline == true
+        shell: bash
+        working-directory: apps/desktop
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
+          TARGET: ${{ matrix.target }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        run: |
+          set -euo pipefail
+          offline='{"bundle":{"createUpdaterArtifacts":false,"windows":{"webviewInstallMode":{"type":"offlineInstaller"}}}}'
+          # shellcheck disable=SC2086
+          npm run tauri build -- --target "$TARGET" --bundles nsis ${{ matrix.config_args }} ${TAURI_SIGN_ARGS:-} --config "$offline"
+          shopt -s nullglob
+          for f in ../../target/"$TARGET"/release/bundle/nsis/*-setup.exe; do
+            out="${f%-setup.exe}-offline-setup.exe"
+            mv "$f" "$out"
+            name="$(basename "$out")"
+            echo "上传 $name"
+            # 资产上传接口不接受草稿的 tag 名，直接用 release id；同名则先删再传
+            old="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets" --jq ".[] | select(.name==\"$name\") | .id")"
+            [ -z "$old" ] || gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$old"
+            gh api -X POST -H "Content-Type: application/octet-stream" \
+              "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?name=$name" \
+              --input "$out" > /dev/null
+          done
+
+  # ---------------------------------------------------------------- 命令行版
+  cli:
+    name: rterm-cli ${{ matrix.target }}
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl,  os: ubuntu-22.04,   zig: true,  ext: tar.gz }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-22.04,   zig: true,  ext: tar.gz }
+          - { target: x86_64-pc-windows-msvc,     os: windows-latest, zig: false, ext: zip }
+          - { target: aarch64-pc-windows-msvc,    os: windows-latest, zig: false, ext: zip }
+          - { target: x86_64-apple-darwin,        os: macos-latest,   zig: false, ext: tar.gz }
+          - { target: aarch64-apple-darwin,       os: macos-latest,   zig: false, ext: tar.gz }
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: Windows 静态链接 CRT
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "RUSTFLAGS=-C target-feature=+crt-static" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cli-${{ matrix.target }}
+
+      # musl 静态链接用 zig 做交叉链接器（比装一堆交叉工具链省事）
+      - name: 安装 zig 与 cargo-zigbuild
+        if: matrix.zig
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+
+      - name: 安装 zig
+        if: matrix.zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - name: 编译（zigbuild，musl 静态）
+        if: matrix.zig
+        run: cargo zigbuild --release -p rterm-cli --target ${{ matrix.target }}
+
+      - name: 编译
+        if: ${{ !matrix.zig }}
+        run: cargo build --release -p rterm-cli --target ${{ matrix.target }}
+
+      - name: 打包
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TARGET: ${{ matrix.target }}
+          EXT: ${{ matrix.ext }}
+        run: |
+          set -euo pipefail
+          exe=""; [ "$EXT" = zip ] && exe=".exe"
+          name="rterm-cli-${VERSION}-${TARGET}"
+          mkdir -p "dist/$name"
+          cp "target/$TARGET/release/rterm-cli${exe}" "dist/$name/"
+          # Windows 命令行版同样需要新版 ConPTY，放在 exe 同目录
+          if [ "$EXT" = zip ]; then
+            bash scripts/release-stage-resources.sh --target "$TARGET" --conpty-out "dist/$name"
+          fi
+          for f in LICENSE LICENSE-MIT LICENSE-APACHE README.md; do [ -f "$f" ] && cp "$f" "dist/$name/" || true; done
+          cd dist
+          if [ "$EXT" = zip ]; then
+            7z a -tzip "$name.zip" "$name" > /dev/null
+          else
+            tar -czf "$name.tar.gz" "$name"
+          fi
+          rm -rf "$name"
+          ls -la
+          file "../target/$TARGET/release/rterm-cli${exe}" || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.target }}
+          path: dist/rterm-cli-*
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------- 服务端镜像
+  server-image:
+    name: 服务端镜像（GHCR）
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.name.outputs.image }}
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: 镜像名（GHCR 要求全小写）
+        id: name
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/rterm-server" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 计算标签
+        id: tags
+        env:
+          IMAGE: ${{ steps.name.outputs.image }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          tags="$IMAGE:$VERSION"
+          # 只有正式版才更新 latest 和 主.次 标签，预发布版不动它们
+          if [ "$PRERELEASE" = false ]; then
+            tags="$tags,$IMAGE:latest,$IMAGE:${VERSION%.*}"
+          fi
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
+
+      - name: 构建并推送（linux/amd64 + linux/arm64）
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: server
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---------------------------------------------------------------- 汇总并公开
+  publish:
+    name: 汇总资产并公开 Release
+    needs: [prepare, desktop, cli, server-image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # 在仓库 Settings → Environments 里给 release 环境配置“必须审批”，这里会停下来等人确认
+    # （确认前草稿 Release 里的东西都可以先下载到干净机器上做安装验证）
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cli-*
+          path: cli-in
+          merge-multiple: true
+
+      # 命令行版压缩包用 updater 同一把私钥签名，rterm-cli update 用公钥验证
+      - name: 签名命令行版压缩包
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for f in cli-in/rterm-cli-*.tar.gz cli-in/rterm-cli-*.zip; do
+            [ -f "$f" ] || continue
+            npx --yes @tauri-apps/cli@2 signer sign "$f"
+          done
+          ls -la cli-in
+
+      - name: 上传命令行版到 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
+        run: |
+          set -euo pipefail
+          for f in cli-in/*; do
+            name="$(basename "$f")"
+            old="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets" --paginate --jq ".[] | select(.name==\"$name\") | .id")"
+            [ -z "$old" ] || gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$old"
+            gh api -X POST -H "Content-Type: application/octet-stream" \
+              "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?name=$name" \
+              --input "$f" > /dev/null
+            echo "已上传 $name"
+          done
+
+      # 草稿 Release 按 id 访问（草稿用 tag 名查不到），逐个下载全部资产
+      - name: 下载草稿 Release 的全部资产
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets" --paginate --jq '.[] | "\(.id)\t\(.name)"' |
+          while IFS=$'\t' read -r id name; do
+            case "$name" in SHA256SUMS*) continue ;; esac
+            gh api -H "Accept: application/octet-stream" "repos/$GITHUB_REPOSITORY/releases/assets/$id" > "assets/$name"
+          done
+          ls -la assets
+
+      - name: 生成 SHA256SUMS.txt
+        run: bash scripts/release-checksums.sh assets
+
+      - name: 上传校验和并公开 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
+          PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          old="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets" --jq '.[] | select(.name=="SHA256SUMS.txt") | .id')"
+          [ -z "$old" ] || gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$old"
+          gh api -X POST -H "Content-Type: text/plain" \
+            "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?name=SHA256SUMS.txt" \
+            --input assets/SHA256SUMS.txt > /dev/null
+          if [ "$PRERELEASE" = true ]; then latest=false; else latest=true; fi
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            -F draft=false -F prerelease="$PRERELEASE" -f make_latest="$latest" > /dev/null
+          echo "Release 已公开"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          path: assets
+          retention-days: 7
+
+  # ---------------------------------------------------------------- 登记到更新服务器（可选）
+  # 启用方法：仓库变量 UPDATE_SERVER_MODE 设为 direct 或 ssh，并按 docs/发布流程.md 配好其他变量与 secrets。
+  # 管理接口不对公网开放（deploy/Caddyfile 返回 404），所以大多数情况下用 ssh 方式。
+  update-server:
+    name: 登记到更新服务器
+    needs: [prepare, publish]
+    if: ${{ vars.UPDATE_SERVER_MODE == 'direct' || vars.UPDATE_SERVER_MODE == 'ssh' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: update-server
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: assets
+
+      - name: 配置 SSH（仅 ssh 方式）
+        if: vars.UPDATE_SERVER_MODE == 'ssh'
+        env:
+          SSH_KEY: ${{ secrets.UPDATE_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.UPDATE_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: 登记版本（默认 5% 灰度，预发布版本进 beta 通道）
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          ROLLOUT: ${{ vars.ROLLOUT_PERCENT || '5' }}
+          UPDATE_SERVER_URL: ${{ vars.UPDATE_SERVER_URL }}
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          RTERM_ADMIN_SSH: ${{ vars.UPDATE_SERVER_MODE == 'ssh' && vars.UPDATE_SSH_TARGET || '' }}
+          RTERM_DEPLOY_DIR: ${{ vars.UPDATE_DEPLOY_DIR || '/opt/rterm/deploy' }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "RTerm $TAG" "" "详见 ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}" > notes.txt
+          bash scripts/release-admin.sh publish \
+            --version "$VERSION" \
+            --assets assets \
+            --base-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${TAG}" \
+            --rollout "$ROLLOUT" \
+            --notes-file notes.txt
