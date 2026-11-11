@@ -91,6 +91,12 @@ elif [ "$TARGET" = "universal-apple-darwin" ]; then
   lipo -create -output "$SIDECAR" "$a" "$x"
   chmod +x "$SIDECAR"
   echo "已合并通用二进制：$SIDECAR"
+  # tauri 打通用包时会先分别编译两个架构，每个架构都要找自己的 externalBin，所以单架构的也要放
+  bin_dir="$(dirname "$SIDECAR")"
+  cp -f "$a" "$bin_dir/rterm-cli-aarch64-apple-darwin"
+  cp -f "$x" "$bin_dir/rterm-cli-x86_64-apple-darwin"
+  chmod +x "$bin_dir/rterm-cli-aarch64-apple-darwin" "$bin_dir/rterm-cli-x86_64-apple-darwin"
+  echo "已放置单架构副本：rterm-cli-aarch64-apple-darwin、rterm-cli-x86_64-apple-darwin"
 else
   cp -f "$(build_one "$TARGET")" "$SIDECAR"
   chmod +x "$SIDECAR" 2>/dev/null || true
