@@ -536,6 +536,12 @@ export class Controller {
     if (!tab) return;
     // 占用/被接管/已不存在的终端不属于本端，关闭标签时不能去关远端终端
     if (tab.remoteId && tab.status !== 'exited' && !isBlocked(tab.status)) {
+      const ok = await confirmDialog({
+        title: `关闭终端“${tab.title}”？`,
+        message: '将在被控端结束这个终端，正在运行的程序（包括 Claude Code 会话）会被终止。',
+        okText: '关闭终端',
+      });
+      if (!ok) return;
       await this.backend.closeTerm(tab.sessionId, tab.remoteId).catch(() => {});
     }
     this.store.dispatch({ type: 'termRemove', key });

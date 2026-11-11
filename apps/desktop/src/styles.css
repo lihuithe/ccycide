@@ -983,10 +983,13 @@ select.input {
   position: relative;
   z-index: 2;
 }
-.ops-handle-btn {
+.ops-handle .ops-handle-btn {
   position: absolute;
   right: 14px;
   top: -10px;
+}
+.ops-handle-btn {
+  flex: none;
   display: grid;
   place-items: center;
   width: 22px;

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { ActionCatalog, ActionDef, AppState } from '../../backend/types';
 import { SPECIAL_ACTION, findAction, needsParamInput, type ActionModel, type ToolbarItem } from '../../lib/actions';
 import { Icon, IconButton } from '../common';
@@ -14,12 +14,14 @@ export function ClaudeToolbar({
   app,
   onRun,
   onOpenPalette,
+  trailing,
 }: {
   model: ActionModel;
   catalog: ActionCatalog;
   app: AppState | null;
   onRun: (def: ActionDef, args: Record<string, string>) => void;
   onOpenPalette: () => void;
+  trailing?: ReactNode;
 }) {
   const [dialog, setDialog] = useState<{ def: ActionDef; preset?: Record<string, string>; customFor?: string } | null>(null);
   const stateful = !!app?.stateful;
@@ -71,6 +73,7 @@ export function ClaudeToolbar({
 
       <ActionMenu groups={model.menu} onPick={pick} />
       <IconButton icon="search" title="命令面板 (Ctrl+K)" onClick={onOpenPalette} />
+      {trailing}
 
       {dialog && (
         <ParamDialog

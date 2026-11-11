@@ -57,6 +57,23 @@ function TermPaneImpl({ tab, session, active, uploads, dragging, onOpenPalette }
   const showToolbar =
     actionModel.available && (tab.app ? tab.app.app === 'claude' && tab.app.running : tab.profile === 'claude') && tab.status === 'open';
 
+  // 折叠按钮：有工具条时放在工具条最右端（其他按钮左移让位），否则浮在输入框右上角
+  const canFold = tab.passthrough === 'off' && ready && tab.status === 'open';
+  const toolbarShown = showToolbar && !opsCollapsed && !!session?.catalog;
+  const foldButton = (
+    <button
+      type="button"
+      className="ops-handle-btn"
+      title="折叠操作区（键盘直接输入终端）"
+      onClick={() => {
+        setOpsCollapsed(true);
+        c.setPassthrough(tab.key, 'on');
+      }}
+    >
+      <Icon name="down" size={12} />
+    </button>
+  );
+
   const run = (def: ActionDef, args: Record<string, string>) => void c.runAction(tab.key, def, args);
   const card = tab.permissionCard && features.includes(Features.appState) ? tab.permissionCard : null;
 
@@ -95,7 +112,14 @@ function TermPaneImpl({ tab, session, active, uploads, dragging, onOpenPalette }
       <TermView tabKey={tab.key} active={active} searchOpen={searchOpen} onSearchClose={() => setSearchOpen(false)} />
 
       {showToolbar && !opsCollapsed && session?.catalog && (
-        <ClaudeToolbar model={actionModel} catalog={session.catalog} app={tab.app} onRun={run} onOpenPalette={onOpenPalette} />
+        <ClaudeToolbar
+          model={actionModel}
+          catalog={session.catalog}
+          app={tab.app}
+          onRun={run}
+          onOpenPalette={onOpenPalette}
+          trailing={canFold ? foldButton : undefined}
+        />
       )}
       {card && <PermissionCard notice={card} catalog={session?.catalog} enabled={ready} onRun={run} />}
 
@@ -109,21 +133,7 @@ function TermPaneImpl({ tab, session, active, uploads, dragging, onOpenPalette }
           }}
         />
       )}
-      {tab.passthrough === 'off' && ready && tab.status === 'open' && (
-        <div className="ops-handle">
-          <button
-            type="button"
-            className="ops-handle-btn"
-            title="折叠操作区（键盘直接输入终端）"
-            onClick={() => {
-              setOpsCollapsed(true);
-              c.setPassthrough(tab.key, 'on');
-            }}
-          >
-            <Icon name="down" size={12} />
-          </button>
-        </div>
-      )}
+      {canFold && !toolbarShown && <div className="ops-handle">{foldButton}</div>}
       <div className={tab.passthrough !== 'off' || tab.status === 'exited' || isBlocked(tab.status) ? 'composer-hidden' : ''}>
         <Composer
           tab={tab}
