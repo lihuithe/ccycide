@@ -1875,6 +1875,11 @@ mod tests {
         frames
     }
 
+    /// 各平台 shell 的提示符不同：cmd/PowerShell 是 `>`，bash 是 `$`，zsh 是 `%`，root 是 `#`。
+    fn has_prompt(s: &str) -> bool {
+        s.contains(['>', '$', '%', '#'])
+    }
+
     fn output_text(frames: &[pb::Frame]) -> String {
         let mut v = Vec::new();
         for f in frames {
@@ -1890,7 +1895,7 @@ mod tests {
         let m = mgr();
         let (sink, mut rx, _ends) = test_sink(1, 7);
         let term = m.open(cmd_spec(), sink, 42).await.expect("open");
-        let frames = collect_until(&mut rx, 10, |f| output_text(f).contains('>')).await;
+        let frames = collect_until(&mut rx, 10, |f| has_prompt(&output_text(f))).await;
         // 第一帧是 TermOpened，带 req_id 和通道
         match frames.first().and_then(|f| f.body.clone()) {
             Some(pb::frame::Body::TermOpened(o)) => {
@@ -1932,7 +1937,7 @@ mod tests {
                 "mode con 应显示 40 行 120 列：{t:?}"
             );
         }
-        term.write_input(1, b"exit\r".to_vec())
+        term.write_input(1, b"exit 0\r".to_vec())
             .await
             .expect("write");
         let frames = collect_until(&mut rx, 10, |f| {
@@ -1954,7 +1959,7 @@ mod tests {
         let m = mgr();
         let (sink1, mut rx1, _e1) = test_sink(1, 1);
         let term = m.open(cmd_spec(), sink1, 1).await.expect("open");
-        let frames = collect_until(&mut rx1, 10, |f| output_text(f).contains('>')).await;
+        let frames = collect_until(&mut rx1, 10, |f| has_prompt(&output_text(f))).await;
         let mut received = output_text(&frames).into_bytes();
         let last_seq = received.len() as u64;
         // 断开
@@ -2001,7 +2006,7 @@ mod tests {
         let m = mgr();
         let (sink1, mut rx1, _e1) = test_sink(1, 1);
         let term = m.open(cmd_spec(), sink1, 1).await.expect("open");
-        collect_until(&mut rx1, 10, |f| output_text(f).contains('>')).await;
+        collect_until(&mut rx1, 10, |f| has_prompt(&output_text(f))).await;
         let (sink2, mut rx2, _e2) = test_sink(2, 2);
         term.attach(sink2, 2, 0, 0, 0).await;
         let frames = collect_until(&mut rx1, 5, |f| {
@@ -2016,8 +2021,8 @@ mod tests {
         assert_eq!(err.map(|e| e.code), Some("TERM_DETACHED".to_string()));
         assert!(term.is_attached_to(2) && !term.is_attached_to(1));
         // 新会话拿到完整回放
-        let frames = collect_until(&mut rx2, 5, |f| output_text(f).contains('>')).await;
-        assert!(output_text(&frames).contains('>'));
+        let frames = collect_until(&mut rx2, 5, |f| has_prompt(&output_text(f))).await;
+        assert!(has_prompt(&output_text(&frames)));
         term.close(true).await;
     }
 
@@ -2033,7 +2038,7 @@ mod tests {
         let m = mgr();
         let (sa, mut ra, _ga) = test_sink_as(1, 1, "devA");
         let term = m.open(cmd_spec(), sa, 1).await.expect("open");
-        collect_until(&mut ra, 10, |f| output_text(f).contains('>')).await;
+        collect_until(&mut ra, 10, |f| has_prompt(&output_text(f))).await;
         // 设备 B 想抢：TERM_BUSY，A 的附着不受影响
         let (sb, mut rb, _gb) = test_sink_as(2, 7, "devB");
         assert!(term.would_be_busy(&sb));
@@ -2061,7 +2066,7 @@ mod tests {
         let m = mgr();
         let (sa, mut ra, ga) = test_sink_as(1, 1, "devA");
         let term = m.open(cmd_spec(), sa, 1).await.expect("open");
-        collect_until(&mut ra, 10, |f| output_text(f).contains('>')).await;
+        collect_until(&mut ra, 10, |f| has_prompt(&output_text(f))).await;
         // A 的连接断了，但终端还记着它的附着（会话尚未被清理）
         drop(ga);
         drop(ra);
@@ -2074,7 +2079,7 @@ mod tests {
         let (sb, mut rb, _gb) = test_sink_as(2, 3, "devB");
         assert!(!term.would_be_busy(&sb));
         term.attach(sb, 4, 0, 0, 0).await;
-        let frames = collect_until(&mut rb, 5, |f| output_text(f).contains('>')).await;
+        let frames = collect_until(&mut rb, 5, |f| has_prompt(&output_text(f))).await;
         assert!(frames
             .iter()
             .any(|f| matches!(f.body, Some(pb::frame::Body::TermOpened(_)))));
@@ -2087,7 +2092,7 @@ mod tests {
         let m = mgr();
         let (s1, mut r1, _g1) = test_sink_as(1, 1, "devA");
         let term = m.open(cmd_spec(), s1, 1).await.expect("open");
-        collect_until(&mut r1, 10, |f| output_text(f).contains('>')).await;
+        collect_until(&mut r1, 10, |f| has_prompt(&output_text(f))).await;
         // 旧连接还没被检测到断开（仍然存活），同一设备的新连接来了
         let (s2, mut r2, _g2) = test_sink_as(2, 5, "devA");
         assert!(!term.would_be_busy(&s2));
@@ -2097,8 +2102,8 @@ mod tests {
             first_error(&frames).map(|e| e.code),
             Some("TERM_DETACHED".to_string())
         );
-        let frames = collect_until(&mut r2, 5, |f| output_text(f).contains('>')).await;
-        assert!(output_text(&frames).contains('>'));
+        let frames = collect_until(&mut r2, 5, |f| has_prompt(&output_text(f))).await;
+        assert!(has_prompt(&output_text(&frames)));
         assert!(term.is_attached_to(2) && !term.is_attached_to(1));
         term.close(true).await;
     }
@@ -2149,7 +2154,7 @@ mod tests {
         );
         let (sink1, mut rx1, _e1) = test_sink(1, 1);
         let term = m.open(cmd_spec(), sink1, 1).await.expect("open");
-        collect_until(&mut rx1, 10, |f| output_text(f).contains('>')).await;
+        collect_until(&mut rx1, 10, |f| has_prompt(&output_text(f))).await;
         term.detach(1).await;
         let cmd: &[u8] = if cfg!(windows) {
             b"for /L %i in (1,1,400) do @echo line_%i_padding_padding\r"
@@ -2247,7 +2252,7 @@ mod tests {
         );
         let (s1, mut r1, _e1) = test_sink(1, 1);
         let t = m.open(cmd_spec(), s1, 1).await.expect("open");
-        collect_until(&mut r1, 10, |f| output_text(f).contains('>')).await;
+        collect_until(&mut r1, 10, |f| has_prompt(&output_text(f))).await;
         t.write_input(1, b"exit\r".to_vec()).await.expect("w");
         for _ in 0..50 {
             if t.exited().is_some() {
@@ -2283,7 +2288,7 @@ mod tests {
         );
         let (s1, mut r1, _e1) = test_sink(1, 1);
         let t = m.open(cmd_spec(), s1, 1).await.expect("open");
-        collect_until(&mut r1, 10, |f| output_text(f).contains('>')).await;
+        collect_until(&mut r1, 10, |f| has_prompt(&output_text(f))).await;
         t.detach(1).await;
         for _ in 0..60 {
             if m.get(t.id()).is_none() {
@@ -2299,7 +2304,7 @@ mod tests {
         let m = mgr();
         let (s1, mut r1, _e1) = test_sink(1, 1);
         let t = m.open(cmd_spec(), s1.clone(), 1).await.expect("open");
-        collect_until(&mut r1, 10, |f| output_text(f).contains('>')).await;
+        collect_until(&mut r1, 10, |f| has_prompt(&output_text(f))).await;
         // 普通 shell 里提交：generic 规则，没开 bracketed paste，直接写文本再回车
         t.submit(
             s1.clone(),
@@ -2364,7 +2369,7 @@ mod tests {
         let m = mgr();
         let (s1, mut r1, _e1) = test_sink(1, 1);
         let t = m.open(cmd_spec(), s1, 1).await.expect("open");
-        collect_until(&mut r1, 10, |f| output_text(f).contains('>')).await;
+        collect_until(&mut r1, 10, |f| has_prompt(&output_text(f))).await;
         let send = |ev: serde_json::Value| {
             m.dispatch_bridge(BridgeMessage {
                 term_id: t.id().to_string(),
@@ -2413,7 +2418,7 @@ mod tests {
         let m = mgr();
         let (s1, mut r1, _e1) = test_sink(1, 1);
         let t = m.open(cmd_spec(), s1.clone(), 1).await.expect("open");
-        collect_until(&mut r1, 10, |f| output_text(f).contains('>')).await;
+        collect_until(&mut r1, 10, |f| has_prompt(&output_text(f))).await;
         m.dispatch_bridge(BridgeMessage { term_id: t.id().to_string(), kind: "hook".into(), payload: serde_json::json!({"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"ls"}}) });
         let frames = collect_until(&mut r1, 5, |f| {
             f.iter()
@@ -2495,7 +2500,7 @@ mod tests {
         let m = mgr();
         let (s1, mut r1, _e1) = test_sink(1, 1);
         let t = m.open(cmd_spec(), s1, 1).await.expect("open");
-        collect_until(&mut r1, 10, |f| output_text(f).contains('>')).await;
+        collect_until(&mut r1, 10, |f| has_prompt(&output_text(f))).await;
         let show = if cfg!(windows) { "type" } else { "cat" };
         t.write_input(1, format!("{show} \"{}\"\r", big.display()).into_bytes())
             .await
@@ -2565,7 +2570,7 @@ mod tests {
         let m = mgr();
         let (s1, mut r1, _e1) = test_sink(1, 1);
         let t = m.open(cmd_spec(), s1, 1).await.expect("open");
-        collect_until(&mut r1, 10, |f| output_text(f).contains('>')).await;
+        collect_until(&mut r1, 10, |f| has_prompt(&output_text(f))).await;
         let cmd: &[u8] = if cfg!(windows) {
             b"ping -t 127.0.0.1\r"
         } else {

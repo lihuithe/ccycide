@@ -23,6 +23,8 @@ env:
 
 jobs:
   # ---------- Rust：fmt / clippy / test，三平台 ----------
+  # Linux 上不编译桌面端（rterm-desktop）：它要装一大批 GTK/WebKit 系统依赖，apt 经常很慢；
+  # 桌面端的 Linux 编译单独放在下面的 desktop-linux job 里，失败不阻塞合并。
   rust:
     name: Rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -30,16 +32,26 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-22.04]
+        include:
+          - os: windows-latest
+            exclude: ''
+          - os: macos-latest
+            exclude: ''
+          - os: ubuntu-22.04
+            exclude: '--exclude rterm-desktop'
     steps:
       - uses: actions/checkout@v4
 
-      - name: 安装 Tauri 的 Linux 系统依赖（开发指南 2.2）
+      # 核心库在 Linux 上只需要 openssl 头文件和 libdbus（keyring 的 Secret Service 后端）。
+      # apt 偶尔会卡住，所以设了网络超时，整体超时后重试。
+      - name: 安装 Linux 编译依赖（最小集）
         if: runner.os == 'Linux'
+        timeout-minutes: 12
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential curl wget file libssl-dev pkg-config \
-            libwebkit2gtk-4.1-dev libxdo-dev libayatana-appindicator3-dev librsvg2-dev
+          for i in 1 2 3; do
+            sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 update &&             timeout 300 sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 install -y --no-install-recommends               build-essential pkg-config libssl-dev libdbus-1-dev && break
+            echo "apt 第 $i 次失败，重试"; sleep 5
+          done
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -57,11 +69,38 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: cargo clippy -D warnings
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace ${{ matrix.exclude }} --all-targets -- -D warnings
 
       # 默认不跑 #[ignore] 的测试：它们需要真实钥匙串、已登录的 Claude Code、或手动启动的开发服务器
       - name: cargo test
-        run: cargo test --workspace
+        run: cargo test --workspace ${{ matrix.exclude }}
+
+  # ---------- 桌面端 Linux 编译（可选，失败不阻塞） ----------
+  desktop-linux:
+    name: 桌面端编译 (Linux)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Tauri 的 Linux 系统依赖（开发指南 2.2）
+        timeout-minutes: 15
+        run: |
+          for i in 1 2 3; do
+            sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 update &&             timeout 480 sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 install -y --no-install-recommends               build-essential curl wget file libssl-dev pkg-config libdbus-1-dev               libwebkit2gtk-4.1-dev libxdo-dev libayatana-appindicator3-dev librsvg2-dev && break
+            echo "apt 第 $i 次失败，重试"; sleep 5
+          done
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 建立空的 frontendDist
+        run: mkdir -p apps/desktop/dist
+
+      - name: cargo check（桌面端）
+        run: cargo check -p rterm-desktop --all-targets
 
   # ---------- 依赖审计（不阻塞合并，但会在日志和摘要里提示） ----------
   audit:
@@ -214,7 +253,7 @@ jobs:
           MYSQL_URL: mysql://root:ci@127.0.0.1:3306/rterm_smoke
           REDIS_URL: redis://127.0.0.1:6379/0
           TICKET_SECRET: ci-ticket-secret-0123456789abcdef
-          ADMIN_TOKEN: ci-admin-token
+          ADMIN_TOKEN: ci-admin-token-0123456789abcdef0123456789abcdef
           PORT: '18080'
           LOG_LEVEL: warn
         run: |
