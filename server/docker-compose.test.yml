@@ -1,0 +1,119 @@
+# 真实依赖测试用：MySQL 8.4 + Redis 7，以及可选的完整运行栈（migrate + signal×2 + relay）。
+# 独立的项目名 rterm-test，不会碰同机上的 rterm 部署栈。详见 docs/服务端测试.md。
+#
+#   docker compose -f docker-compose.test.yml up -d --wait mysql redis                 # 只起依赖
+#   docker compose -f docker-compose.test.yml --profile stack up -d --build            # 再加运行栈
+#   docker compose -f docker-compose.test.yml --profile stack down -v                  # 清理（含数据卷）
+name: rterm-test
+
+x-app: &app
+  image: rterm-test-server:local
+  build:
+    context: .
+  init: true
+  networks: [default]
+
+x-app-env: &app-env
+  NODE_ENV: production
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  REDIS_URL: redis://:${TEST_REDIS_PASSWORD:-testredis}@redis:6379/0
+  TICKET_SECRET: test-ticket-secret-0123456789abcdef
+  TRUST_PROXY: "false"
+
+services:
+  mysql:
+    image: ${MYSQL_IMAGE:-mysql:8.4}
+    ports: ["127.0.0.1:${TEST_MYSQL_PORT:-13306}:3306"]
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --default-time-zone=+00:00
+      - --performance-schema=OFF       # 省内存，小机器上跑测试用
+      - --max-connections=200
+    environment:
+      MYSQL_ROOT_PASSWORD: ${TEST_MYSQL_PASSWORD:-testroot}
+      MYSQL_DATABASE: rterm
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./docker/mysql-init.sql:/docker-entrypoint-initdb.d/10-stack-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  redis:
+    image: ${REDIS_IMAGE:-redis:7-alpine}
+    ports: ["127.0.0.1:${TEST_REDIS_PORT:-16379}:6379"]
+    command: [redis-server, --requirepass, "${TEST_REDIS_PASSWORD:-testredis}", --maxmemory, 128mb, --maxmemory-policy, noeviction]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD --no-auth-warning ping | grep -q PONG"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    environment:
+      REDIS_PASSWORD: ${TEST_REDIS_PASSWORD:-testredis}
+
+  # ---------- 以下是运行态验证用的完整栈，加 --profile stack 才会启动 ----------
+  migrate:
+    <<: *app
+    profiles: [stack]
+    restart: "no"
+    command: ["node", "dist/migrate.js"]
+    environment:
+      NODE_ENV: production
+      MYSQL_URL: mysql://root:${TEST_MYSQL_PASSWORD:-testroot}@mysql:3306/rterm_stack
+    depends_on:
+      mysql: { condition: service_healthy }
+
+  signal1: &signal
+    <<: *app
+    profiles: [stack]
+    command: ["node", "dist/main-signal.js"]
+    ports: ["127.0.0.1:${TEST_SIGNAL1_PORT:-18081}:8080"]
+    environment: &signal-env
+      <<: *app-env
+      PORT: "8080"
+      MYSQL_URL: mysql://root:${TEST_MYSQL_PASSWORD:-testroot}@mysql:3306/rterm_stack
+      ADMIN_TOKEN: test-admin-token
+      SIGNAL_PUBLIC_URL: ws://signal1:8080/v1/signal   # 客户端在同一 compose 网络内的容器里跑，用服务名访问
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/v1/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  signal2:
+    <<: *signal
+    ports: ["127.0.0.1:${TEST_SIGNAL2_PORT:-18082}:8080"]
+    environment:
+      <<: *signal-env
+      SIGNAL_PUBLIC_URL: ws://signal2:8080/v1/signal
+
+  relay:
+    <<: *app
+    profiles: [stack]
+    command: ["node", "dist/main-relay.js"]
+    ports: ["127.0.0.1:${TEST_RELAY_PORT:-18090}:8081"]
+    environment:
+      <<: *app-env
+      PORT: "8081"
+      RELAY_NODE_NAME: relay-test-01
+      RELAY_REGION: test
+      RELAY_PUBLIC_URL: ws://relay:8081
+    depends_on:
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8081/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  mysql_data:

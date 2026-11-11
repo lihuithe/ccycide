@@ -1,0 +1,149 @@
+name: rterm
+
+x-app: &app
+  image: rterm-server:${IMAGE_TAG}
+  build:
+    context: ../server
+  restart: unless-stopped
+  init: true                      # 让容器正确转发停止信号、回收僵尸进程
+  environment: &app-env           # 信令和中继共用的环境变量
+    NODE_ENV: production
+    LOG_LEVEL: ${LOG_LEVEL}
+    REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+    TICKET_SECRET: ${TICKET_SECRET}
+    TICKET_SECRET_OLD: ${TICKET_SECRET_OLD}
+    # 容器没有映射端口，只有 caddy 能访问到它们，所以信任所有直连来源的 X-Forwarded-For 是安全的
+    TRUST_PROXY: "true"
+  networks: [internal]
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      API_DOMAIN: ${API_DOMAIN}
+      SIGNAL_DOMAIN: ${SIGNAL_DOMAIN}
+      RELAY_DOMAIN: ${RELAY_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data          # 证书存在这里，不能丢
+      - caddy_config:/config
+    depends_on:
+      signal:
+        condition: service_healthy
+      relay:
+        condition: service_healthy
+    networks: [internal]
+
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --default-time-zone=+00:00
+      - --max-connections=300
+      - --binlog-expire-logs-seconds=604800
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks: [internal]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_PASSWORD}
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - noeviction
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    networks: [internal]
+
+  # 执行数据库迁移，执行完就退出。只需要 MYSQL_URL
+  migrate:
+    <<: *app
+    restart: "no"
+    command: ["node", "dist/migrate.js"]
+    environment:
+      NODE_ENV: production
+      MYSQL_URL: mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  signal:
+    <<: *app
+    command: ["node", "dist/main-signal.js"]
+    environment:
+      <<: *app-env
+      PORT: "8080"
+      MYSQL_URL: mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      ADMIN_TOKEN: ${ADMIN_TOKEN}
+      # /v1/config 下发给客户端的信令地址
+      SIGNAL_PUBLIC_URL: wss://${SIGNAL_DOMAIN}/v1/signal
+      MIN_APP_VERSION: ${MIN_APP_VERSION:-0.1.0}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/v1/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    stop_grace_period: 30s
+
+  # 中继不连接 MySQL：会话的字节数和结束状态经 Redis 回传给信令写库，所以这里没有 MYSQL_URL，也不依赖 migrate
+  relay:
+    <<: *app
+    command: ["node", "dist/main-relay.js"]
+    environment:
+      <<: *app-env
+      PORT: "8081"
+      RELAY_NODE_NAME: ${RELAY_NODE_NAME}
+      RELAY_REGION: ${RELAY_REGION}
+      RELAY_PUBLIC_URL: wss://${RELAY_DOMAIN}
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8081/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    stop_grace_period: 60s        # 给进行中的会话留出收尾时间
+
+volumes:
+  mysql_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  internal:

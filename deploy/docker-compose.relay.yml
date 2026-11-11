@@ -1,0 +1,49 @@
+# 额外的中继节点：新机器上只跑 caddy 和 relay，连接主服务器的 Redis。
+# 用法见《部署指南.md》9.1。复制 .env.example 为 .env，只需要填：
+#   RELAY_DOMAIN ACME_EMAIL IMAGE_TAG REDIS_URL TICKET_SECRET TICKET_SECRET_OLD RELAY_NODE_NAME RELAY_REGION
+# 另外需要在主服务器上通过管理接口登记这个节点（PUT /v1/admin/relay-nodes/{name}）。
+name: rterm-relay
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      RELAY_DOMAIN: ${RELAY_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    volumes:
+      - ./Caddyfile.relay:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      relay:
+        condition: service_healthy
+
+  relay:
+    image: rterm-server:${IMAGE_TAG}
+    build:
+      context: ../server
+    restart: unless-stopped
+    init: true
+    command: ["node", "dist/main-relay.js"]
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      PORT: "8081"
+      REDIS_URL: ${REDIS_URL}                 # 主服务器 Redis 的内网地址，如 redis://:密码@10.0.0.2:6379/0
+      TICKET_SECRET: ${TICKET_SECRET}         # 必须和主服务器一致
+      TICKET_SECRET_OLD: ${TICKET_SECRET_OLD:-}
+      RELAY_NODE_NAME: ${RELAY_NODE_NAME}     # 每个节点唯一，如 relay-02
+      RELAY_REGION: ${RELAY_REGION}
+      RELAY_PUBLIC_URL: wss://${RELAY_DOMAIN}
+      TRUST_PROXY: "true"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8081/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    stop_grace_period: 60s
+
+volumes:
+  caddy_data:

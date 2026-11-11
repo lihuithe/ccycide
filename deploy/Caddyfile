@@ -1,0 +1,36 @@
+{
+	email {$ACME_EMAIL}
+}
+
+# HTTP API
+{$API_DOMAIN} {
+	encode gzip
+	# 管理接口和指标不对公网开放（通过 SSH 隧道访问）
+	@internal path /v1/admin /v1/admin/* /metrics
+	respond @internal 404
+	reverse_proxy signal:8080
+}
+
+# 信令 WebSocket：这个域名只需要 /v1/signal，其余路径一律 404，
+# 这样管理接口和指标不会从信令域名漏出去
+{$SIGNAL_DOMAIN} {
+	handle /v1/signal {
+		reverse_proxy signal:8080
+	}
+	handle {
+		respond 404
+	}
+}
+
+# 中继 WebSocket：只放行 /v1/relay 和健康检查，/metrics 不对外
+{$RELAY_DOMAIN} {
+	handle /v1/relay {
+		reverse_proxy relay:8081
+	}
+	handle /healthz {
+		reverse_proxy relay:8081
+	}
+	handle {
+		respond 404
+	}
+}

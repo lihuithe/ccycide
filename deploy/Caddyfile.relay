@@ -1,0 +1,16 @@
+{
+	email {$ACME_EMAIL}
+}
+
+# 额外中继节点：只放行 /v1/relay 和健康检查，/metrics 不对外
+{$RELAY_DOMAIN} {
+	handle /v1/relay {
+		reverse_proxy relay:8081
+	}
+	handle /healthz {
+		reverse_proxy relay:8081
+	}
+	handle {
+		respond 404
+	}
+}

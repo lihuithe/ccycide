@@ -1,0 +1,17 @@
+# 本机开发用的 MySQL 和 Redis（需要 Docker）。只绑定 127.0.0.1。
+# 不想装 Docker 时，直接 `npm run dev:all`（STORE=memory，完全不需要它们）。
+#
+#   docker compose -f docker-compose.dev.yml up -d
+#   STORE=mysql MYSQL_URL=mysql://root:dev@127.0.0.1:3306/rterm REDIS_URL=redis://127.0.0.1:6379 npm run migrate
+name: rterm-dev
+services:
+  mysql:
+    image: mysql:8.4
+    ports: ["127.0.0.1:3306:3306"]
+    environment:
+      MYSQL_ROOT_PASSWORD: dev
+      MYSQL_DATABASE: rterm
+    command: [--character-set-server=utf8mb4, --collation-server=utf8mb4_0900_ai_ci, --default-time-zone=+00:00]
+  redis:
+    image: redis:7-alpine
+    ports: ["127.0.0.1:6379:6379"]

@@ -1,0 +1,30 @@
+# 用 CI 发布到 GHCR 的镜像部署，不在服务器上构建（对应 .github/workflows/release.yml 的 server-image 任务）。
+#
+# 用法（在 deploy/ 目录下）：
+#   1. .env 里写：
+#        RTERM_IMAGE=ghcr.io/<GitHub 用户或组织，小写>/rterm-server
+#        IMAGE_TAG=1.2.0                  # 与 release 的版本号一致，不带 v
+#   2. 私有镜像需要先登录一次（令牌只需 read:packages 权限）：
+#        echo <PAT> | docker login ghcr.io -u <用户名> --password-stdin
+#   3. docker compose -f docker-compose.yml -f docker-compose.ghcr.yml pull
+#      docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up -d
+#
+# 回滚：把 IMAGE_TAG 改回上一个版本再 up -d（旧版本镜像在 GHCR 上一直保留）。
+# 需要 Docker Compose >= 2.24（用到了 !reset）。
+#
+# 中继节点（docker-compose.relay.yml）同理，只启动 relay：
+#   docker compose -f docker-compose.relay.yml -f docker-compose.ghcr.yml up -d relay
+# 这里对 migrate / signal 的覆盖在中继机上用不到，但带着 image 所以不会报错。
+
+x-ghcr-image: &ghcr
+  image: ${RTERM_IMAGE:?请在 .env 里设置 RTERM_IMAGE，例如 ghcr.io/your-org/rterm-server}:${IMAGE_TAG}
+  build: !reset null
+  pull_policy: always
+
+services:
+  migrate:
+    <<: *ghcr
+  signal:
+    <<: *ghcr
+  relay:
+    <<: *ghcr

@@ -1,0 +1,41 @@
+{
+  "name": "rterm-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "RTerm 服务端：API + 信令 + 中继",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev:signal": "tsx watch src/main-signal.ts",
+    "dev:relay": "tsx watch src/main-relay.ts",
+    "dev:all": "tsx src/main-dev.ts",
+    "build": "tsc",
+    "typecheck": "tsc -p tsconfig.check.json",
+    "start": "node dist/main-signal.js",
+    "start:relay": "node dist/main-relay.js",
+    "test": "vitest run",
+    "migrate": "tsx src/migrate.ts",
+    "client:demo": "tsx tools/rterm-client.ts demo",
+    "client:host": "tsx tools/rterm-client.ts host",
+    "client:connect": "tsx tools/rterm-client.ts connect"
+  },
+  "dependencies": {
+    "fastify": "^5.12.8",
+    "ioredis": "^5.11.1",
+    "knex": "^3.3.0",
+    "mysql2": "^3.24.6",
+    "pino": "^10.4.0",
+    "ulid": "^3.0.2",
+    "ws": "^8.22.2"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/ws": "^8.18.2",
+    "ioredis-mock": "^8.13.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  }
+}
