@@ -2331,8 +2331,17 @@ mod tests {
             output_text(&frames).matches("via_submit").count() >= 2,
             "回显 + 命令输出"
         );
-        // 普通 shell 里执行动作：APP_NOT_RUNNING，终端里没有被写入任何内容
-        let before = t.info().last_seq;
+        // 普通 shell 里执行动作：APP_NOT_RUNNING，终端里没有被写入任何内容。
+        // 先等输出稳定（命令输出之后 shell 还会再打印提示符，Linux 上比 Windows 晚），再记起点
+        let mut before = t.info().last_seq;
+        for _ in 0..20 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let now = t.info().last_seq;
+            if now == before {
+                break;
+            }
+            before = now;
+        }
         t.action(
             s1.clone(),
             pb::TermAction {
