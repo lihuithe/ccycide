@@ -2,7 +2,7 @@ import { authSignString, decodeB64Exact, newUlid, verifyEd25519 } from '../crypt
 import type { DeviceRecord } from '../db/repos/index.js';
 import { signTicket } from '../relay/ticket.js';
 import type { PresenceInfo } from '../store/index.js';
-import { ipToBuffer, rateKeyIp } from '../util/ip.js';
+import { banTargetFor, ipToBuffer, rateKeyIp } from '../util/ip.js';
 import { versionLt } from '../util/version.js';
 import type { Conn } from './conn.js';
 import { CLOSE, protoCompatible, type AuthErrCode, type ConnectErrCode, type Msg } from './protocol.js';
@@ -235,9 +235,9 @@ async function onConnectRequest(srv: SignalServer, conn: Conn, msg: Msg): Promis
   // 2. 枚举检测：来源设备连续请求不存在 / 不在线的设备码（先于限流计数，否则被限流的枚举者永远累计不到阈值）
   if (!online) {
     // 计数存储出错时 fail-closed（与后面的限流一致），不能让存储故障变成免检
-    let miss: { count: number; ban: boolean };
+    let miss: { count: number; ban: boolean; sourceCount: number };
     try {
-      miss = await ctx.guard.recordMiss(dev.uid);
+      miss = await ctx.guard.recordMiss(dev.uid, rateKeyIp(conn.ip));
     } catch (e) {
       ctx.log.error({ err: (e as Error).message }, '枚举计数存储不可用，拒绝连接请求');
       return err('NO_RELAY', 'store_error');
@@ -245,7 +245,10 @@ async function onConnectRequest(srv: SignalServer, conn: Conn, msg: Msg): Promis
     if (miss.ban) {
       const expires = new Date(Date.now() + GUARD.missBanSec * 1000);
       await ctx.repos.bans.add({ kind: 'device', value: dev.uid, reason: '疑似枚举设备码', source: 'auto', expiresAt: expires, createdBy: 'system' }).catch((e) => ctx.log.error({ err: (e as Error).message }, '写入自动封禁失败'));
-      await ctx.repos.events.add({ type: 'enum_suspected', sourceDeviceId: dev.id, sourceIp: ipToBuffer(conn.ip), detail: { misses: miss.count, ban_sec: GUARD.missBanSec } });
+      // 同时封来源（IPv4 单个地址、IPv6 整个 /64），否则换一个新注册的设备就能继续枚举
+      const src = banTargetFor(conn.ip);
+      await ctx.repos.bans.add({ kind: src.kind, value: src.value, reason: '疑似枚举设备码（来源）', source: 'auto', expiresAt: expires, createdBy: 'system' }).catch((e) => ctx.log.error({ err: (e as Error).message }, '写入来源自动封禁失败'));
+      await ctx.repos.events.add({ type: 'enum_suspected', sourceDeviceId: dev.id, sourceIp: ipToBuffer(conn.ip), detail: { misses: miss.count, source_misses: miss.sourceCount, source_ban: src.value, ban_sec: GUARD.missBanSec } });
       ctx.m.connectResults.inc({ result: 'enum_banned' });
       srv.kickConn(conn, 'banned');
       return;

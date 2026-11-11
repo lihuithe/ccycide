@@ -1,6 +1,6 @@
 //! 设备身份：Ed25519 密钥对。私钥存在 `SecretStore`（系统钥匙串或 0600 文件）。
 use base64::Engine;
-use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 
 use crate::secrets::{SecretError, SecretStore, DEVICE_KEY};
 
@@ -71,6 +71,10 @@ impl Identity {
 }
 
 /// 验证 Ed25519 签名（公钥 32 字节，签名 64 字节）。
+///
+/// L12：使用 `verify_strict`——拒绝小阶（弱）公钥和不规范（可延展）的签名。
+/// 普通 `verify` 对小阶公钥会接受“任意消息”的伪造签名。握手里的对端公钥来自信令、签名来自对端，
+/// 严格校验后，握手认证不再依赖“对端公钥是正常生成的”这一假设。
 pub fn verify_signature(public_key: &[u8], msg: &[u8], sig: &[u8]) -> bool {
     let Ok(pk) = <[u8; 32]>::try_from(public_key) else {
         return false;
@@ -81,7 +85,7 @@ pub fn verify_signature(public_key: &[u8], msg: &[u8], sig: &[u8]) -> bool {
     let Ok(vk) = VerifyingKey::from_bytes(&pk) else {
         return false;
     };
-    vk.verify(msg, &ed25519_dalek::Signature::from_bytes(&sig))
+    vk.verify_strict(msg, &ed25519_dalek::Signature::from_bytes(&sig))
         .is_ok()
 }
 
@@ -99,6 +103,25 @@ mod tests {
         let other = Identity::generate();
         assert!(!verify_signature(&other.public_key(), b"hello", &sig));
         assert!(!verify_signature(&id.public_key()[..31], b"hello", &sig));
+    }
+
+    /// L12：小阶（弱）公钥必须被拒绝。
+    /// 公钥 = 单位元（编码 01 00..00），签名 = (R = 单位元, S = 0) 对任意消息都满足普通 `verify`，
+    /// 即攻击者无需私钥就能“签名”；`verify_strict` 会拒绝。
+    #[test]
+    fn small_order_public_key_is_rejected() {
+        let mut pk = [0u8; 32];
+        pk[0] = 1;
+        let mut sig = [0u8; 64];
+        sig[0] = 1;
+        // 前提：普通 verify 确实会接受（否则这个测试没有意义）
+        use ed25519_dalek::Verifier;
+        let vk = VerifyingKey::from_bytes(&pk).expect("单位元是合法编码");
+        assert!(vk
+            .verify(b"anything", &ed25519_dalek::Signature::from_bytes(&sig))
+            .is_ok());
+        assert!(!verify_signature(&pk, b"anything", &sig));
+        assert!(!verify_signature(&pk, b"other message", &sig));
     }
 
     #[test]

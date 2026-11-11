@@ -48,6 +48,12 @@ export interface Tunables {
   maxSessionsPerHost: number;
   /** 信令连接同 IP 并发上限（50） */
   maxSignalConnsPerIp: number;
+  /** 中继：同一来源（IPv6 按 /64）同时连接数上限（256）。一台被控端最多同时接受 100 个会话，留出余量 */
+  maxRelayConnsPerIp: number;
+  /** 中继：同一设备（票据里的 did）同时连接数上限（128 = 被控端 100 + 主控端 8，留出余量） */
+  maxRelayConnsPerDevice: number;
+  /** 中继：本节点同时等待配对的连接数上限（1000）；超出的新连接以 4004 关闭 */
+  maxRelayWaiting: number;
   /** 单条信令连接的消息速率上限：每 10 秒多少条 */
   maxMsgsPer10s: number;
   /** 公钥缓存时间（5 分钟）与 last_seen 写库节流（5 分钟） */
@@ -122,6 +128,9 @@ export const DEFAULT_TUNABLES: Tunables = {
   maxSessionsPerDevice: 8,
   maxSessionsPerHost: 100,
   maxSignalConnsPerIp: 50,
+  maxRelayConnsPerIp: 256,
+  maxRelayConnsPerDevice: 128,
+  maxRelayWaiting: 1000,
   maxMsgsPer10s: 200,
   deviceCacheMs: 5 * 60_000,
   lastSeenThrottleMs: 5 * 60_000,
@@ -186,6 +195,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, opts: { require
     errors.push('CONFIG_SIGNING_KEY 必须是 base64 编码的 32 字节 Ed25519 seed（可用 openssl rand -base64 32 生成）');
   }
 
+  // 管理令牌太短等于没有（限流只能挡住单个来源，见安全审查 L10）：生产环境要求至少 32 个字符
+  if (prod && env.ADMIN_TOKEN && env.ADMIN_TOKEN.length < 32) {
+    errors.push('ADMIN_TOKEN 太短，生产环境至少 32 个字符（建议 openssl rand -hex 32）');
+  }
+
   const minAppVersion = str(env, 'MIN_APP_VERSION', '0.1.0');
   const latestAppVersion = str(env, 'LATEST_APP_VERSION', minAppVersion);
   if (!parseVersion(minAppVersion)) errors.push(`MIN_APP_VERSION 不是合法的版本号：${minAppVersion}`);
@@ -204,6 +218,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, opts: { require
   t.registerPerHourPerIp = num(env, 'RATE_REGISTER_PER_HOUR_IP', t.registerPerHourPerIp, errors);
   t.connectPerMinIp = num(env, 'RATE_CONNECT_PER_MIN_IP', t.connectPerMinIp, errors);
   t.publicPerMinIp = num(env, 'RATE_PUBLIC_PER_MIN_IP', t.publicPerMinIp, errors);
+  t.maxRelayConnsPerIp = num(env, 'MAX_RELAY_CONNS_PER_IP', t.maxRelayConnsPerIp, errors);
+  t.maxRelayConnsPerDevice = num(env, 'MAX_RELAY_CONNS_PER_DEVICE', t.maxRelayConnsPerDevice, errors);
+  t.maxRelayWaiting = num(env, 'MAX_RELAY_WAITING', t.maxRelayWaiting, errors);
 
   const relayCapacity = num(env, 'RELAY_CAPACITY', 5000, errors);
   const drainWaitSec = num(env, 'RELAY_DRAIN_WAIT_SEC', 0, errors);

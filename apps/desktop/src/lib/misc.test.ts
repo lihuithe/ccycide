@@ -4,7 +4,7 @@ import { attachmentStatus, hasPendingAttachments, pastedImageName, type Attachme
 import { allCompletionItems, completionInsertText, completionQuery, filterCompletions } from './completion';
 import { formatBytes, formatDeviceCode, formatDuration, parseDeviceCode } from './format';
 import { DONE_MERGE_MS, focusJumpTarget, NoticeNotifier, type NotifyContext } from './notify';
-import { TEMP_PASSWORD_CHARSET, validateFixedPassword } from './password';
+import { passwordClasses, TEMP_PASSWORD_CHARSET, validateFixedPassword } from './password';
 
 describe('设备码格式', () => {
   it('3 位一组，忽略空格和非数字，不限定 9 位', () => {
@@ -25,13 +25,20 @@ describe('密码规则', () => {
   it('临时密码字符集不含易混淆字符', () => {
     for (const c of '0O1lI') expect(TEMP_PASSWORD_CHARSET).not.toContain(c);
   });
-  it('固定密码：至少 8 位，且不能是 8 位纯临时字符集', () => {
-    expect(validateFixedPassword('short')).not.toBeNull();
-    expect(validateFixedPassword('abcd2345')).not.toBeNull();
-    expect(validateFixedPassword('abcd2345x')).toBeNull();
-    expect(validateFixedPassword('abcd-234')).toBeNull();
-    // 含易混淆字符的 8 位不属于临时密码字符集，可以用
-    expect(validateFixedPassword('abcdl234')).toBeNull();
+  it('固定密码：至少 10 位且至少 3 类字符', () => {
+    expect(validateFixedPassword('Short1!')).toBe('至少 10 位');
+    expect(validateFixedPassword('abcd2345')).toBe('至少 10 位');
+    expect(validateFixedPassword('abcdefghij')).toMatch(/至少 3 类/);
+    expect(validateFixedPassword('abcdefgh12')).toMatch(/至少 3 类/);
+    expect(validateFixedPassword('ABCdefghij')).toMatch(/至少 3 类/);
+    expect(validateFixedPassword('abcdefgh1!')).toBeNull();
+    expect(validateFixedPassword('Abcdefgh12')).toBeNull();
+    expect(validateFixedPassword('Zx9-kq-Lm4-w')).toBeNull();
+  });
+  it('字符类别计数：非 ASCII 与空格算符号', () => {
+    expect(passwordClasses('abc')).toBe(1);
+    expect(passwordClasses('abC1')).toBe(3);
+    expect(passwordClasses('abc 中')).toBe(2);
   });
 });
 
@@ -60,7 +67,7 @@ describe('通知策略', () => {
     windowFocused: false, isActiveTab: true, tabLabel: 'Claude Code', notifyOnDone: true, notifyOnPermission: true, ...p,
   });
   const notice = (p: Partial<AppNotice>): AppNotice => ({
-    kind: 'done', title: '', text: '', noticeId: '', toolName: '', toolSummary: '', resolved: false, ...p,
+    kind: 'done', title: '', text: '', noticeId: '', toolName: '', toolSummary: '', resolved: false, truncated: false, ...p,
   });
 
   it('窗口在前台且是当前标签：不通知', () => {

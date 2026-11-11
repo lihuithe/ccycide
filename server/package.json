@@ -2,6 +2,7 @@
   "name": "rterm-server",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "RTerm 服务端：API + 信令 + 中继",
   "type": "module",
   "engines": {

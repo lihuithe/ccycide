@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use rterm_proto::pb;
 use sha2::{Digest, Sha256};
@@ -16,6 +16,8 @@ use tokio::io::AsyncWriteExt;
 pub const ACK_EVERY: u64 = 256 * 1024;
 /// 单个会话同时进行的上传数上限。
 pub const MAX_CONCURRENT_FILES: usize = 8;
+/// 进行中的文件的默认空闲超时。
+pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// 文件名最大字节数。
 pub const MAX_NAME_BYTES: usize = 200;
 
@@ -28,6 +30,8 @@ pub struct InboxConfig {
     /// inbox 里最多保留多少个文件（含进行中的 `.part`）。大小为 0 的文件不占配额，没有这个上限就能无限创建
     pub max_files: usize,
     pub retention: Duration,
+    /// 进行中的文件这么久没有任何数据块就回收预留并删除 `.part`（审查 L6）
+    pub idle_timeout: Duration,
 }
 
 impl InboxConfig {
@@ -39,6 +43,7 @@ impl InboxConfig {
             max_total: 2 * 1024 * 1024 * 1024,
             max_files: 5000,
             retention: Duration::from_secs(7 * 24 * 3600),
+            idle_timeout: DEFAULT_IDLE_TIMEOUT,
         }
     }
 }
@@ -86,6 +91,31 @@ pub struct Inbox {
     enabled: AtomicBool,
     /// "统计占用 + 预留"必须是原子的，否则并发的 FileBegin 会同时通过总量检查（审查 L6）
     quota_lock: tokio::sync::Mutex<()>,
+    /// 所有进行中的文件（跨会话），供空闲回收
+    slots: Mutex<Vec<Arc<Slot>>>,
+}
+
+/// 一个进行中文件的占位：预留大小、最近活动时间。预留只会被释放一次。
+struct Slot {
+    size: u64,
+    part_path: PathBuf,
+    last: Mutex<Instant>,
+    released: AtomicBool,
+    expired: AtomicBool,
+}
+
+impl Slot {
+    fn touch(&self) {
+        if let Ok(mut l) = self.last.lock() {
+            *l = Instant::now();
+        }
+    }
+    fn idle_for(&self) -> Duration {
+        self.last
+            .lock()
+            .map(|l| l.elapsed())
+            .unwrap_or_else(|e| e.into_inner().elapsed())
+    }
 }
 
 impl Inbox {
@@ -96,6 +126,7 @@ impl Inbox {
             reserved: AtomicU64::new(0),
             enabled,
             quota_lock: tokio::sync::Mutex::new(()),
+            slots: Mutex::new(Vec::new()),
         })
     }
 
@@ -123,6 +154,51 @@ impl Inbox {
             c.max_file_size = max_file_size;
             c.max_total = max_total;
         }
+    }
+
+    pub fn set_idle_timeout(&self, d: Duration) {
+        if let Ok(mut c) = self.cfg.write() {
+            c.idle_timeout = d;
+        }
+    }
+
+    fn idle_timeout(&self) -> Duration {
+        self.cfg
+            .read()
+            .map(|c| c.idle_timeout)
+            .unwrap_or_else(|e| e.into_inner().idle_timeout)
+    }
+
+    fn register(&self, slot: Arc<Slot>) {
+        if let Ok(mut v) = self.slots.lock() {
+            v.push(slot);
+        }
+    }
+
+    /// 释放预留并注销（幂等）。
+    fn release(&self, slot: &Arc<Slot>) {
+        if !slot.released.swap(true, Ordering::AcqRel) {
+            self.reserved.fetch_sub(slot.size, Ordering::AcqRel);
+            if let Ok(mut v) = self.slots.lock() {
+                v.retain(|s| !Arc::ptr_eq(s, slot));
+            }
+        }
+    }
+
+    /// 回收空闲超时的文件：释放预留、删除 `.part`，并标记过期（所属会话下次访问时得到错误）。
+    /// 返回回收的个数。
+    pub fn reap_idle(&self) -> usize {
+        let limit = self.idle_timeout();
+        let idle: Vec<Arc<Slot>> = match self.slots.lock() {
+            Ok(v) => v.iter().filter(|s| s.idle_for() > limit).cloned().collect(),
+            Err(_) => return 0,
+        };
+        for s in &idle {
+            s.expired.store(true, Ordering::Release);
+            self.release(s);
+            let _ = std::fs::remove_file(&s.part_path);
+        }
+        idle.len()
     }
 
     /// 新建一个会话级的接收状态。
@@ -182,6 +258,22 @@ impl Inbox {
     /// 启动时清理一次，之后每天一次。需在 tokio 运行时内调用。
     pub fn spawn_cleanup_task(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
         let me = self.clone();
+        // 空闲回收：只持弱引用，Inbox 释放后自行退出
+        let weak = Arc::downgrade(self);
+        tokio::spawn(async move {
+            while let Some(i) = weak.upgrade() {
+                let period = (i.idle_timeout() / 4)
+                    .clamp(Duration::from_millis(20), Duration::from_secs(15));
+                drop(i);
+                tokio::time::sleep(period).await;
+                match weak.upgrade() {
+                    Some(i) => {
+                        i.reap_idle();
+                    }
+                    None => break,
+                }
+            }
+        });
         tokio::spawn(async move {
             loop {
                 let m = me.clone();
@@ -231,6 +323,7 @@ struct Incoming {
     hasher: Sha256,
     /// `FileEnd` 先于数据到达时暂存的哈希
     pending_end: Option<Vec<u8>>,
+    slot: Arc<Slot>,
 }
 
 /// 一条会话里的文件接收状态。会话结束（或丢弃）时，未完成的 `.part` 被删除。
@@ -251,7 +344,26 @@ impl InboxSession {
         self.done.lock().ok().and_then(|m| m.get(&file_id).cloned())
     }
 
+    /// 丢弃本会话里已被回收（过期）的文件。
+    async fn sweep_expired(&mut self) {
+        self.inbox.reap_idle();
+        let ids: Vec<u64> = self
+            .files
+            .iter()
+            .filter(|(_, f)| f.slot.expired.load(Ordering::Acquire))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ids {
+            self.discard(id).await;
+        }
+    }
+
+    fn timeout_error() -> InboxError {
+        InboxError::new("FILE_IO", "上传空闲超时，已回收")
+    }
+
     pub async fn begin(&mut self, req: &pb::FileBegin) -> Result<pb::FileAccept, InboxError> {
+        self.sweep_expired().await;
         if !self.inbox.is_enabled() {
             return Err(InboxError::new("FILE_DISABLED", "被控端已关闭文件接收"));
         }
@@ -297,6 +409,14 @@ impl InboxSession {
             return Err(InboxError::new("FILE_IO", "目标路径越界"));
         }
         inbox.reserved.fetch_add(req.size, Ordering::AcqRel);
+        let slot = Arc::new(Slot {
+            size: req.size,
+            part_path: part_path.clone(),
+            last: Mutex::new(Instant::now()),
+            released: AtomicBool::new(false),
+            expired: AtomicBool::new(false),
+        });
+        inbox.register(slot.clone());
         self.files.insert(
             req.file_id,
             Incoming {
@@ -308,6 +428,7 @@ impl InboxSession {
                 last_ack: 0,
                 hasher: Sha256::new(),
                 pending_end: None,
+                slot,
             },
         );
         Ok(pb::FileAccept {
@@ -318,9 +439,15 @@ impl InboxSession {
     /// 写入一块。出错时该文件已被清理。
     /// `FileEnd` 比最后几块数据先到时（交互队列优先于批量队列，可能乱序），收齐数据的那一块会触发收尾。
     pub async fn chunk(&mut self, c: &pb::FileChunk) -> Result<ChunkOutcome, InboxError> {
+        let limit = self.inbox.idle_timeout();
         let Some(f) = self.files.get_mut(&c.file_id) else {
             return Err(InboxError::new("BAD_REQUEST", "未知的 file_id"));
         };
+        if f.slot.expired.load(Ordering::Acquire) || f.slot.idle_for() > limit {
+            self.discard(c.file_id).await;
+            return Err(Self::timeout_error());
+        }
+        f.slot.touch();
         let bad = if c.offset != f.received {
             Some(InboxError::new("FILE_IO", "offset 不连续"))
         } else if f.received + c.data.len() as u64 > f.size {
@@ -356,9 +483,14 @@ impl InboxSession {
     /// 收到 `FileEnd`。数据已收齐则校验并改名，返回 `Some(FileDone)`；
     /// 数据还没收齐（`FileEnd` 抢在了数据块前面）则先记下哈希，返回 `None`，等最后一块到达时收尾。
     pub async fn end(&mut self, e: &pb::FileEnd) -> Result<Option<pb::FileDone>, InboxError> {
+        let limit = self.inbox.idle_timeout();
         let Some(f) = self.files.get_mut(&e.file_id) else {
             return Err(InboxError::new("BAD_REQUEST", "未知的 file_id"));
         };
+        if f.slot.expired.load(Ordering::Acquire) || f.slot.idle_for() > limit {
+            self.discard(e.file_id).await;
+            return Err(Self::timeout_error());
+        }
         if f.received < f.size {
             f.pending_end = Some(e.sha256.clone());
             return Ok(None);
@@ -370,7 +502,7 @@ impl InboxSession {
         let Some(mut f) = self.files.remove(&file_id) else {
             return Err(InboxError::new("BAD_REQUEST", "未知的 file_id"));
         };
-        self.inbox.reserved.fetch_sub(f.size, Ordering::AcqRel);
+        self.inbox.release(&f.slot);
         if f.received != f.size {
             let _ = tokio::fs::remove_file(&f.part_path).await;
             return Err(InboxError::new("FILE_IO", "接收的字节数与声明不符"));
@@ -410,7 +542,7 @@ impl InboxSession {
 
     async fn discard(&mut self, file_id: u64) {
         if let Some(f) = self.files.remove(&file_id) {
-            self.inbox.reserved.fetch_sub(f.size, Ordering::AcqRel);
+            self.inbox.release(&f.slot);
             drop(f.file);
             let _ = tokio::fs::remove_file(&f.part_path).await;
         }
@@ -434,7 +566,7 @@ impl Drop for InboxSession {
     fn drop(&mut self) {
         // 兜底：任务被直接取消时也别留下 .part
         for (_, f) in self.files.drain() {
-            self.inbox.reserved.fetch_sub(f.size, Ordering::AcqRel);
+            self.inbox.release(&f.slot);
             let part = f.part_path.clone();
             drop(f.file);
             let _ = std::fs::remove_file(part);
@@ -1048,5 +1180,84 @@ mod tests {
         let inbox = new_inbox(tmp.path());
         inbox.cleanup_expired();
         assert!(victim.exists(), "不能跟随符号链接删除 inbox 之外的文件");
+    }
+
+    fn begin_req(id: u64, size: u64) -> pb::FileBegin {
+        pb::FileBegin {
+            file_id: id,
+            name: format!("idle{id}.bin"),
+            size,
+            mime: String::new(),
+        }
+    }
+
+    /// 审查 L6：只声明大小不发数据的 FileBegin，超时后回收预留并删除 .part。
+    #[tokio::test]
+    async fn idle_file_is_reaped_and_reservation_released() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let mut cfg = InboxConfig::new(tmp.path().to_path_buf());
+        cfg.max_total = 1000;
+        cfg.idle_timeout = Duration::from_millis(80);
+        let inbox = Inbox::new(cfg);
+        let mut a = inbox.session();
+        a.begin(&begin_req(1, 1000)).await.expect("begin");
+        // 预留占满：另一个会话进不来
+        let mut b = inbox.session();
+        assert_eq!(
+            b.begin(&begin_req(1, 10)).await.err().map(|e| e.code),
+            Some("FILE_TOO_LARGE")
+        );
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        // 另一个会话的 begin 触发回收，预留被释放
+        b.begin(&begin_req(1, 10)).await.expect("回收后可再预留");
+        assert_eq!(walk(tmp.path()).len(), 1, "过期的 .part 已删除");
+        // 原会话继续发数据得到超时错误
+        let r = a
+            .chunk(&pb::FileChunk {
+                file_id: 1,
+                offset: 0,
+                data: vec![0; 4],
+            })
+            .await;
+        let e = r.expect_err("应超时");
+        assert_eq!(e.code, "FILE_IO");
+        assert_eq!(a.in_progress(), 0);
+        // 预留没有被重复扣减
+        assert_eq!(inbox.reserved.load(Ordering::Acquire), 10);
+    }
+
+    #[tokio::test]
+    async fn active_uploads_are_not_reaped() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let mut cfg = InboxConfig::new(tmp.path().to_path_buf());
+        cfg.idle_timeout = Duration::from_millis(300);
+        let inbox = Inbox::new(cfg);
+        let mut s = inbox.session();
+        s.begin(&begin_req(1, 8)).await.expect("begin");
+        for i in 0..4u64 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert_eq!(inbox.reap_idle(), 0);
+            s.chunk(&pb::FileChunk {
+                file_id: 1,
+                offset: i * 2,
+                data: vec![1, 2],
+            })
+            .await
+            .expect("chunk");
+        }
+    }
+
+    #[tokio::test]
+    async fn idle_reaping_still_respects_file_count_cap() {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let mut cfg = InboxConfig::new(tmp.path().to_path_buf());
+        cfg.max_files = 2;
+        cfg.idle_timeout = Duration::from_secs(60);
+        let inbox = Inbox::new(cfg);
+        let mut s = inbox.session();
+        s.begin(&begin_req(1, 0)).await.expect("b1");
+        s.begin(&begin_req(2, 0)).await.expect("b2");
+        let r = s.begin(&begin_req(3, 0)).await;
+        assert_eq!(r.err().map(|e| e.code), Some("FILE_TOO_LARGE"));
     }
 }

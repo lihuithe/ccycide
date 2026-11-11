@@ -256,3 +256,8 @@ export function actionErrorText(e: CommandError): string {
       return e.message || '操作失败';
   }
 }
+
+/** 权限卡片能否显示“允许”：参数被截断（truncated）时远程看不全，只能拒绝或回终端处理 */
+export function canAllowPermission(notice: { truncated: boolean }): boolean {
+  return !notice.truncated;
+}

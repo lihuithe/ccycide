@@ -12,6 +12,8 @@ export const GUARD = {
   /** 枚举：10 分钟内请求不存在的设备码 20 次 -> 封禁 1 小时 */
   missWindowMs: 10 * 60_000,
   missThreshold: 20,
+  /** 同一来源（IPv6 按 /64）下所有设备合计：10 分钟内 60 次。防止用多个设备分摊枚举 */
+  missSourceThreshold: 60,
   missBanSec: 3600,
 };
 
@@ -66,11 +68,18 @@ export class Guard {
     return { count, locked: true, lockSec };
   }
 
-  /** 记录一次“请求不存在/不在线的设备码”，返回是否达到封禁阈值 */
-  async recordMiss(deviceUid: string): Promise<{ count: number; ban: boolean }> {
+  /**
+   * 记录一次“请求不存在/不在线的设备码”，返回是否达到封禁阈值。
+   * 同时按来源计数（sourceKey 是 rateKeyIp 的结果，IPv6 已按 /64 归一）：来源合计达到阈值也触发封禁。
+   */
+  async recordMiss(deviceUid: string, sourceKey?: string): Promise<{ count: number; ban: boolean; sourceCount: number }> {
     const count = await this.kv.incrBy(`miss:${deviceUid}`, 1, GUARD.missWindowMs);
-    if (count < GUARD.missThreshold) return { count, ban: false };
+    const sourceCount = sourceKey ? await this.kv.incrBy(`miss:src:${sourceKey}`, 1, GUARD.missWindowMs) : 0;
+    const deviceHit = count >= GUARD.missThreshold;
+    const sourceHit = sourceKey !== undefined && sourceCount >= GUARD.missSourceThreshold;
+    if (!deviceHit && !sourceHit) return { count, ban: false, sourceCount };
     await this.kv.del(`miss:${deviceUid}`);
-    return { count, ban: true };
+    if (sourceKey) await this.kv.del(`miss:src:${sourceKey}`);
+    return { count, ban: true, sourceCount };
   }
 }

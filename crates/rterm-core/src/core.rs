@@ -1322,6 +1322,8 @@ impl Inner {
         let guard = tokio::task::spawn_blocking(move || Guard::new(&code, access))
             .await
             .map_err(|e| BringUpError::Fatal(CoreError::new(codes::UNKNOWN, e.to_string())))?;
+        // 锁定状态持久化：重启后仍处于锁定（审查 L9）
+        guard.attach_state_file(&self.store.paths.data_dir.join("guard-state.json"));
         let fixed = self.store.load_fixed_key_checked();
         let fixed_read_ok = fixed.is_ok();
         if let Err(e) = &fixed {

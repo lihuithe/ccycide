@@ -4,6 +4,7 @@ import type { Duplex } from 'node:stream';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 import { ticketSecrets } from '../config.js';
 import type { BaseCtx } from '../context.js';
+import { clientIp, rateKeyIp } from '../util/ip.js';
 import { every } from '../util/time.js';
 import { utcDate } from '../util/time.js';
 import { TokenBucket } from './limiter.js';
@@ -47,6 +48,10 @@ class Peer {
   quotaPending = 0;
   quotaBlocked = false;
   closed = false;
+  /** 来源计数键（IPv6 按 /64 归一），null 表示没有计入 */
+  ipKey: string | null = null;
+  /** 已计入设备并发连接数的设备 ID */
+  countedDid: string | null = null;
 
   constructor(ws: WebSocket) {
     this.ws = ws;
@@ -71,6 +76,9 @@ export class RelayServer {
   private wss: WebSocketServer;
   /** 等待配对的一端 */
   private waiting = new Map<string, Peer>();
+  /** 并发连接数：按来源（IPv6 /64）、按设备 */
+  private ipConns = new Map<string, number>();
+  private didConns = new Map<string, number>();
   private sessions = new Map<string, Session>();
   private timers: NodeJS.Timeout[] = [];
   private draining = false;
@@ -87,6 +95,17 @@ export class RelayServer {
 
   get sessionCount(): number {
     return this.sessions.size;
+  }
+
+  /** 当前等待配对的连接数（测试用） */
+  get waitingCount(): number {
+    return this.waiting.size;
+  }
+
+  /** 当前计入来源 / 设备并发限制的连接总数（测试用，用来确认连接关闭后计数被释放） */
+  get connCounters(): { ips: number; devices: number } {
+    const sum = (m: Map<string, number>): number => [...m.values()].reduce((a, b) => a + b, 0);
+    return { ips: sum(this.ipConns), devices: sum(this.didConns) };
   }
 
   get isDraining(): boolean {
@@ -187,17 +206,28 @@ export class RelayServer {
       socket.destroy();
       return;
     }
+    // 同一来源的并发连接数上限：握手之前就拒绝，不占 WebSocket 资源（安全审查建议 11）。
+    // 来源 IP 只在受信任代理（TRUST_PROXY，compose 里即 caddy）后面才采用 X-Forwarded-For
+    const ipKey = rateKeyIp(clientIp(req.socket.remoteAddress, req.headers['x-forwarded-for'], this.ctx.trust));
+    if ((this.ipConns.get(ipKey) ?? 0) >= this.ctx.cfg.tunables.maxRelayConnsPerIp) {
+      this.ctx.m.relayCloses.inc({ code: 429 });
+      socket.write('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+      socket.destroy();
+      return;
+    }
     const token = u.searchParams.get('ticket') ?? '';
     // 票据无效时也完成握手再用 4001 关闭，客户端才能拿到明确的原因
-    this.wss.handleUpgrade(req, socket, head, (ws) => this.onConnection(ws, token));
+    this.wss.handleUpgrade(req, socket, head, (ws) => this.onConnection(ws, token, ipKey));
   }
 
   // ---------- 连接与配对 ----------
 
-  private onConnection(ws: WebSocket, token: string): void {
+  private onConnection(ws: WebSocket, token: string, ipKey: string): void {
     const { ctx } = this;
     const peer = new Peer(ws);
     this.peerOf.set(ws, peer);
+    peer.ipKey = ipKey;
+    this.ipConns.set(ipKey, (this.ipConns.get(ipKey) ?? 0) + 1);
 
     ws.on('error', () => {});
     ws.on('pong', () => {
@@ -211,6 +241,12 @@ export class RelayServer {
     if (!ticket) return this.reject(peer, RELAY_CLOSE.TICKET_INVALID, 'invalid ticket');
     peer.ticket = ticket;
     if (this.draining) return this.reject(peer, RELAY_CLOSE.MAINTENANCE, 'draining');
+    // 同一设备的并发连接数上限（含已配对和等待配对的）
+    const did = ticket.did;
+    const n = (this.didConns.get(did) ?? 0) + 1;
+    this.didConns.set(did, n);
+    peer.countedDid = did;
+    if (n > ctx.cfg.tunables.maxRelayConnsPerDevice) return this.reject(peer, RELAY_CLOSE.RATE_LIMIT, 'too many connections for this device');
 
     void this.admit(peer, ticket).catch((err) => {
       ctx.log.error({ err: (err as Error).message }, '中继准入检查出错');
@@ -244,6 +280,8 @@ export class RelayServer {
 
     const w = this.waiting.get(ticket.sid);
     if (!w) {
+      // 等待配对的连接总数上限：配对对端迟迟不来的连接最多占用这么多
+      if (this.waiting.size >= ctx.cfg.tunables.maxRelayWaiting) return this.reject(peer, RELAY_CLOSE.RATE_LIMIT, 'too many unpaired connections');
       peer.pairTimer = setTimeout(() => this.onPairTimeout(peer), ctx.cfg.tunables.pairTimeoutMs);
       this.waiting.set(ticket.sid, peer);
       return;
@@ -391,8 +429,18 @@ export class RelayServer {
 
   // ---------- 关闭 ----------
 
+  private release(map: Map<string, number>, key: string | null): void {
+    if (key === null) return;
+    const n = (map.get(key) ?? 1) - 1;
+    if (n <= 0) map.delete(key);
+    else map.set(key, n);
+  }
+
   private onClose(peer: Peer): void {
     peer.closed = true;
+    this.release(this.ipConns, peer.ipKey);
+    this.release(this.didConns, peer.countedDid);
+    peer.ipKey = peer.countedDid = null;
     if (peer.pairTimer) clearTimeout(peer.pairTimer);
     if (peer.bpTimer) clearInterval(peer.bpTimer);
     if (peer.rateTimer) clearTimeout(peer.rateTimer);

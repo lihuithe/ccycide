@@ -3,7 +3,10 @@
 //! 条目名约定：`device-key`（设备私钥 32 字节）、`fixed-pw-key`（固定密码的 pw_key）等。
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+
+use zeroize::Zeroizing;
 
 pub const SERVICE: &str = "rterm";
 /// 设备私钥的条目名
@@ -78,14 +81,52 @@ impl SecretStore for KeyringStore {
 
 // ---------------------------------------------------------------- 文件兜底
 
-/// 文件存储：每个条目一个文件，Unix 上权限 0600。
+/// 文件存储：每个条目一个文件，Unix 上目录 0700、文件 0600；Windows 上目录 DACL 仅当前用户
+/// （保护型，不继承父目录的访问项；审查 L7）。
 pub struct FileStore {
     dir: PathBuf,
+    /// 权限不合格的警告只记一次
+    warned: AtomicBool,
 }
 
 impl FileStore {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
-        Self { dir: dir.into() }
+        Self {
+            dir: dir.into(),
+            warned: AtomicBool::new(false),
+        }
+    }
+
+    /// 创建目录并收紧权限；收紧失败只记警告，不阻止写入（钥匙串不可用时这是唯一的存储）。
+    fn ensure_dir(&self) -> Result<(), SecretError> {
+        std::fs::create_dir_all(&self.dir).map_err(|e| SecretError::Io(e.to_string()))?;
+        if let Err(e) = private_dir::restrict(&self.dir) {
+            tracing::warn!("无法把机密目录权限收紧为仅当前用户：{e}");
+        }
+        Ok(())
+    }
+
+    /// 读取前验证目录权限；不合格则警告并尝试重新收紧。
+    fn verify_dir(&self) {
+        if !self.dir.exists() {
+            return;
+        }
+        match private_dir::is_private(&self.dir) {
+            Ok(true) => {}
+            Ok(false) => {
+                if !self.warned.swap(true, Ordering::Relaxed) {
+                    tracing::warn!("机密目录的访问权限过宽，正在收紧为仅当前用户");
+                }
+                if let Err(e) = private_dir::restrict(&self.dir) {
+                    tracing::warn!("收紧机密目录权限失败：{e}");
+                }
+            }
+            Err(e) => {
+                if !self.warned.swap(true, Ordering::Relaxed) {
+                    tracing::warn!("无法验证机密目录的访问权限：{e}");
+                }
+            }
+        }
     }
 
     fn path(&self, name: &str) -> Result<PathBuf, SecretError> {
@@ -106,7 +147,9 @@ impl SecretStore for FileStore {
         "file"
     }
     fn get(&self, name: &str) -> Result<Option<Vec<u8>>, SecretError> {
-        match std::fs::read(self.path(name)?) {
+        let path = self.path(name)?;
+        self.verify_dir();
+        match std::fs::read(path) {
             Ok(v) => Ok(Some(v)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(SecretError::Io(e.to_string())),
@@ -114,7 +157,7 @@ impl SecretStore for FileStore {
     }
     fn set(&self, name: &str, value: &[u8]) -> Result<(), SecretError> {
         let path = self.path(name)?;
-        std::fs::create_dir_all(&self.dir).map_err(|e| SecretError::Io(e.to_string()))?;
+        self.ensure_dir()?;
         let tmp = path.with_extension("secret.tmp");
         write_private(&tmp, value).map_err(|e| SecretError::Io(e.to_string()))?;
         std::fs::rename(&tmp, &path).map_err(|e| SecretError::Io(e.to_string()))
@@ -146,15 +189,210 @@ fn write_private(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
 
 #[cfg(not(unix))]
 fn write_private(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
-    // Windows 上数据目录位于用户配置目录下，默认只有当前用户和管理员可访问
+    // 目录 DACL 已是仅当前用户且可继承（见 `private_dir`），新文件自动继承
     std::fs::write(path, data)
+}
+
+#[cfg(unix)]
+mod private_dir {
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+
+    pub fn restrict(dir: &Path) -> std::io::Result<()> {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+    }
+
+    pub fn is_private(dir: &Path) -> std::io::Result<bool> {
+        Ok(std::fs::metadata(dir)?.permissions().mode() & 0o077 == 0)
+    }
+}
+
+#[cfg(windows)]
+mod private_dir {
+    //! Windows：把目录 DACL 设为“仅当前用户完全控制”的保护型 DACL（OI/CI 继承给其中的文件）。
+    use std::io;
+    use std::path::Path;
+    use std::ptr::{null, null_mut};
+
+    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE};
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+        GetNamedSecurityInfoW, SetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
+    };
+    use windows_sys::Win32::Security::{
+        AclSizeInformation, GetAce, GetAclInformation, GetSecurityDescriptorDacl,
+        GetTokenInformation, TokenUser, ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION,
+        DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, TOKEN_QUERY, TOKEN_USER,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    const ACCESS_ALLOWED_ACE_TYPE: u8 = 0;
+
+    fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
+        use std::os::windows::ffi::OsStrExt;
+        s.encode_wide().chain(std::iter::once(0)).collect()
+    }
+
+    unsafe fn sid_to_string(sid: *mut core::ffi::c_void) -> io::Result<String> {
+        let mut p: *mut u16 = null_mut();
+        if unsafe { ConvertSidToStringSidW(sid, &mut p) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut n = 0;
+        while unsafe { *p.add(n) } != 0 {
+            n += 1;
+        }
+        let s = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(p, n) });
+        unsafe { LocalFree(p as _) };
+        Ok(s)
+    }
+
+    /// 当前进程用户的 SID 字符串（`S-1-5-21-…`）。
+    pub fn current_user_sid() -> io::Result<String> {
+        unsafe {
+            let mut tok: HANDLE = null_mut();
+            if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut tok) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let mut len = 0u32;
+            GetTokenInformation(tok, TokenUser, null_mut(), 0, &mut len);
+            let mut buf = vec![0u64; (len as usize).div_ceil(8).max(1)];
+            let ok = GetTokenInformation(tok, TokenUser, buf.as_mut_ptr().cast(), len, &mut len);
+            let res = if ok == 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                let tu = &*(buf.as_ptr() as *const TOKEN_USER);
+                sid_to_string(tu.User.Sid)
+            };
+            CloseHandle(tok);
+            res
+        }
+    }
+
+    /// DACL 里所有“允许”访问项的 SID 字符串。没有 DACL（对所有人开放）时返回 `S-1-1-0`。
+    pub fn allowed_sids(path: &Path) -> io::Result<Vec<String>> {
+        let w = wide(path.as_os_str());
+        unsafe {
+            let mut dacl: *mut ACL = null_mut();
+            let mut sd = null_mut();
+            let rc = GetNamedSecurityInfoW(
+                w.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                &mut dacl,
+                null_mut(),
+                &mut sd,
+            );
+            if rc != 0 {
+                return Err(io::Error::from_raw_os_error(rc as i32));
+            }
+            let res = (|| {
+                if dacl.is_null() {
+                    return Ok(vec!["S-1-1-0".to_string()]);
+                }
+                let mut info: ACL_SIZE_INFORMATION = std::mem::zeroed();
+                if GetAclInformation(
+                    dacl,
+                    (&mut info as *mut ACL_SIZE_INFORMATION).cast(),
+                    std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
+                    AclSizeInformation,
+                ) == 0
+                {
+                    return Err(io::Error::last_os_error());
+                }
+                let mut out = Vec::new();
+                for i in 0..info.AceCount {
+                    let mut ace: *mut core::ffi::c_void = null_mut();
+                    if GetAce(dacl, i, &mut ace) == 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    let a = ace as *mut ACCESS_ALLOWED_ACE;
+                    if (*a).Header.AceType == ACCESS_ALLOWED_ACE_TYPE {
+                        let sid = std::ptr::addr_of_mut!((*a).SidStart) as *mut core::ffi::c_void;
+                        out.push(sid_to_string(sid)?);
+                    }
+                }
+                Ok(out)
+            })();
+            LocalFree(sd as _);
+            res
+        }
+    }
+
+    /// 只允许当前用户、SYSTEM、Administrators 才算合格。
+    pub fn is_private(path: &Path) -> io::Result<bool> {
+        let me = current_user_sid()?;
+        Ok(allowed_sids(path)?
+            .iter()
+            .all(|s| *s == me || s == "S-1-5-18" || s == "S-1-5-32-544"))
+    }
+
+    pub fn restrict(path: &Path) -> io::Result<()> {
+        let me = current_user_sid()?;
+        // 保护型 DACL（不继承父目录），仅当前用户完全控制，对子对象和容器继承
+        apply_sddl(path, &format!("D:P(A;OICI;FA;;;{me})"))
+    }
+
+    pub fn apply_sddl(path: &Path, sddl: &str) -> io::Result<()> {
+        let sddl: Vec<u16> = sddl.encode_utf16().chain(std::iter::once(0)).collect();
+        unsafe {
+            let mut sd = null_mut();
+            if ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                SDDL_REVISION_1,
+                &mut sd,
+                null_mut(),
+            ) == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            let mut present = 0i32;
+            let mut defaulted = 0i32;
+            let mut dacl: *mut ACL = null_mut();
+            let res = if GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted) == 0
+                || present == 0
+            {
+                Err(io::Error::other("无法取得 DACL"))
+            } else {
+                let w = wide(path.as_os_str());
+                let rc = SetNamedSecurityInfoW(
+                    w.as_ptr() as *mut u16,
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                    null_mut(),
+                    null_mut(),
+                    dacl,
+                    null(),
+                );
+                if rc == 0 {
+                    Ok(())
+                } else {
+                    Err(io::Error::from_raw_os_error(rc as i32))
+                }
+            };
+            LocalFree(sd as _);
+            res
+        }
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+mod private_dir {
+    pub fn restrict(_: &std::path::Path) -> std::io::Result<()> {
+        Ok(())
+    }
+    pub fn is_private(_: &std::path::Path) -> std::io::Result<bool> {
+        Ok(true)
+    }
 }
 
 // ---------------------------------------------------------------- 内存（测试）
 
 #[derive(Default)]
 pub struct MemoryStore {
-    map: Mutex<HashMap<String, Vec<u8>>>,
+    map: Mutex<HashMap<String, Zeroizing<Vec<u8>>>>,
 }
 
 impl SecretStore for MemoryStore {
@@ -167,13 +405,13 @@ impl SecretStore for MemoryStore {
             .lock()
             .map_err(|_| SecretError::Io("锁中毒".into()))?
             .get(name)
-            .cloned())
+            .map(|v| v.to_vec()))
     }
     fn set(&self, name: &str, value: &[u8]) -> Result<(), SecretError> {
         self.map
             .lock()
             .map_err(|_| SecretError::Io("锁中毒".into()))?
-            .insert(name.to_string(), value.to_vec());
+            .insert(name.to_string(), Zeroizing::new(value.to_vec()));
         Ok(())
     }
     fn delete(&self, name: &str) -> Result<(), SecretError> {
@@ -278,6 +516,63 @@ mod tests {
         exercise(&s);
         assert!(s.set("../evil", &[1]).is_err());
         assert!(s.get("a/b").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_store_dir_is_0700() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("sec");
+        let s = FileStore::new(&dir);
+        s.set("k", &[1]).unwrap();
+        let m = std::fs::metadata(&dir).unwrap().permissions().mode();
+        assert_eq!(m & 0o777, 0o700);
+    }
+
+    /// 审查 L7：Windows 上 secrets 目录 DACL 只含当前用户，没有 Everyone / Users / Authenticated Users。
+    #[cfg(windows)]
+    #[test]
+    fn file_store_dacl_is_current_user_only() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("sec");
+        let s = FileStore::new(&dir);
+        s.set("k", &[1]).unwrap();
+        let me = private_dir::current_user_sid().unwrap();
+        for p in [dir.clone(), dir.join("k.secret")] {
+            let sids = private_dir::allowed_sids(&p).unwrap();
+            assert!(sids.contains(&me), "{p:?}: {sids:?}");
+            for bad in ["S-1-1-0", "S-1-5-32-545", "S-1-5-11"] {
+                assert!(!sids.iter().any(|x| x == bad), "{p:?} 含 {bad}: {sids:?}");
+            }
+            assert_eq!(sids.len(), 1, "{p:?}: {sids:?}");
+        }
+    }
+
+    /// 读取时发现权限过宽会重新收紧。
+    #[cfg(windows)]
+    #[test]
+    fn file_store_repairs_loose_dacl_on_read() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("sec");
+        std::fs::create_dir_all(&dir).unwrap();
+        // 故意放开成 Everyone 完全控制
+        private_dir::apply_sddl(&dir, "D:P(A;OICI;FA;;;WD)").unwrap();
+        assert!(!private_dir::is_private(&dir).unwrap());
+        let s = FileStore::new(&dir);
+        let _ = s.get("k").unwrap();
+        assert!(private_dir::is_private(&dir).unwrap());
+        let sids = private_dir::allowed_sids(&dir).unwrap();
+        assert_eq!(sids, vec![private_dir::current_user_sid().unwrap()]);
+    }
+
+    #[test]
+    fn memory_store_values_are_zeroizing() {
+        fn assert_zod<T: zeroize::ZeroizeOnDrop>() {}
+        assert_zod::<Zeroizing<Vec<u8>>>();
+        let m = MemoryStore::default();
+        m.set("a", &[1, 2]).unwrap();
+        assert_eq!(m.get("a").unwrap(), Some(vec![1, 2]));
     }
 
     #[cfg(unix)]

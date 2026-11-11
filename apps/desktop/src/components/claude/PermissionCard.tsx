@@ -1,5 +1,5 @@
 import type { ActionCatalog, ActionDef, AppNotice } from '../../backend/types';
-import { NOTICE_ID_PARAM, SPECIAL_ACTION, findAction } from '../../lib/actions';
+import { NOTICE_ID_PARAM, SPECIAL_ACTION, canAllowPermission, findAction } from '../../lib/actions';
 
 /** 权限卡片：显示工具名与参数摘要；目录里有 permission.allow/deny 时带按钮，否则只做提示 */
 export function PermissionCard({
@@ -24,14 +24,17 @@ export function PermissionCard({
         {notice.toolSummary ? `: ${notice.toolSummary}` : ''}
         {!notice.toolName && notice.text}
       </span>
+      {notice.truncated && <span className="perm-warn">内容过长已截断，请回到终端查看</span>}
       {allow && deny && (
         <>
           <button type="button" className="btn small" disabled={!enabled} onClick={() => onRun(deny, args)}>
             拒绝
           </button>
-          <button type="button" className="btn small primary" disabled={!enabled} onClick={() => onRun(allow, args)}>
-            允许
-          </button>
+          {canAllowPermission(notice) && (
+            <button type="button" className="btn small primary" disabled={!enabled} onClick={() => onRun(allow, args)}>
+              允许
+            </button>
+          )}
         </>
       )}
     </div>

@@ -341,7 +341,9 @@ class MockTerm {
       `${C.dim}● 分析 ${text.slice(0, 20).replace(/\s+/g, ' ')} 相关代码${C.reset}`,
     ];
     let i = 0;
-    const needPerm = /构建|build|rm |删除/i.test(text);
+    const needPerm = /构建|build|rm |删除|截断|truncat/i.test(text);
+    // 演示：输入里带“截断”或 truncated 时，模拟过长的工具参数被截断（不允许远程批准）
+    const truncated = /截断|truncat/i.test(text);
     const step = async () => {
       if (token !== this.workToken) return;
       if (i < lines.length) {
@@ -354,7 +356,7 @@ class MockTerm {
         this.write(`\r\n${C.yellow}╭ 需要确认 ─────────────────────╮${C.reset}\r\n${C.yellow}│${C.reset} Bash: npm run build\r\n${C.yellow}│${C.reset} ${C.green}❯ 1. 允许${C.reset}  2. 拒绝\r\n${C.yellow}╰────────────────────────────────╯${C.reset}\r\n`);
         this.host.emit({
           type: 'appNotice', sessionId: this.sessionId, termId: this.termId,
-          notice: { kind: 'permission', title: '需要你确认', text: '', noticeId, toolName: 'Bash', toolSummary: 'npm run build', resolved: false },
+          notice: { kind: 'permission', title: '需要你确认', text: '', noticeId, toolName: 'Bash', toolSummary: 'npm run build', resolved: false, truncated },
         });
         const allowed = await new Promise<boolean>((resolve) => {
           this.permission = { noticeId, resolve };
@@ -363,7 +365,7 @@ class MockTerm {
         if (token !== this.workToken) return;
         this.host.emit({
           type: 'appNotice', sessionId: this.sessionId, termId: this.termId,
-          notice: { kind: 'permission', title: '', text: '', noticeId, toolName: '', toolSummary: '', resolved: true },
+          notice: { kind: 'permission', title: '', text: '', noticeId, toolName: '', toolSummary: '', resolved: true, truncated: false },
         });
         this.pushApp({ activity: 'busy' });
         this.write(allowed ? `  ${C.green}✔ 已允许，构建完成${C.reset}\r\n` : `  ${C.red}✘ 已拒绝${C.reset}\r\n`);
@@ -381,7 +383,7 @@ class MockTerm {
       });
       this.host.emit({
         type: 'appNotice', sessionId: this.sessionId, termId: this.termId,
-        notice: { kind: 'done', title: '任务完成', text: '', noticeId: '', toolName: '', toolSummary: '', resolved: false },
+        notice: { kind: 'done', title: '任务完成', text: '', noticeId: '', toolName: '', toolSummary: '', resolved: false, truncated: false },
       });
     };
     this.later(500, step);
@@ -613,7 +615,7 @@ export function createMockBackend(): Backend {
       foreignBusy = true;
       emit({
         type: 'appNotice', sessionId, termId,
-        notice: { kind: 'error', title: 'TERM_BUSY', text: '', noticeId: '', toolName: '', toolSummary: '', resolved: false },
+        notice: { kind: 'error', title: 'TERM_BUSY', text: '', noticeId: '', toolName: '', toolSummary: '', resolved: false, truncated: false },
       });
     },
   };
@@ -692,6 +694,11 @@ export function createMockBackend(): Backend {
       return local.tempPassword;
     },
     async setFixedPassword(password) {
+      if (password) {
+        if (/^(password|qwerty|admin|letmein)/i.test(password)) {
+          throw { code: 'WEAK_PASSWORD', message: '密码太弱：常见弱口令' } satisfies CommandError;
+        }
+      }
       local.fixedPasswordSet = password !== null;
     },
     async acceptIncoming(sessionId) {

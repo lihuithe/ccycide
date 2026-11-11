@@ -767,6 +767,12 @@ select.input {
   font-weight: 600;
   white-space: nowrap;
 }
+.perm-warn {
+  flex: none;
+  color: var(--warn);
+  font-size: 12px;
+  white-space: nowrap;
+}
 .perm-tool {
   flex: 1;
   min-width: 0;

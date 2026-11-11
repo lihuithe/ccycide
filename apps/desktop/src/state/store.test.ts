@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AppNotice, AppState, CoreEvent, TermModes } from '../backend/types';
 import { findTermKey, initialModel, makeTab, reducer, type Action, type AppModel } from './store';
+import { canAllowPermission } from '../lib/actions';
 
 const modes = (p: Partial<TermModes> = {}): TermModes => ({ bracketedPaste: false, altScreen: false, appCursor: false, mouse: false, title: '', ...p });
 
@@ -99,7 +100,7 @@ describe('终端直通', () => {
 
 describe('权限卡片', () => {
   const notice = (p: Partial<AppNotice>): AppNotice => ({
-    kind: 'permission', title: '', text: '', noticeId: '7', toolName: 'Bash', toolSummary: 'npm run build', resolved: false, ...p,
+    kind: 'permission', title: '', text: '', noticeId: '7', toolName: 'Bash', toolSummary: 'npm run build', resolved: false, truncated: false, ...p,
   });
 
   it('出现、被同 id 的 resolved 撤掉', () => {
@@ -110,6 +111,14 @@ describe('权限卡片', () => {
     expect(m.terms.k1.permissionCard).not.toBeNull();
     m = run(m, core({ type: 'appNotice', sessionId: 's1', termId: 't1', notice: notice({ resolved: true }) }));
     expect(m.terms.k1.permissionCard).toBeNull();
+  });
+
+  it('truncated 标志原样保留，且不能远程允许', () => {
+    let m = withTerm('claude');
+    m = run(m, core({ type: 'appNotice', sessionId: 's1', termId: 't1', notice: notice({ truncated: true }) }));
+    expect(m.terms.k1.permissionCard?.truncated).toBe(true);
+    expect(canAllowPermission(m.terms.k1.permissionCard!)).toBe(false);
+    expect(canAllowPermission(notice({}))).toBe(true);
   });
 
   it('活动不再是等待确认时卡片失效', () => {
@@ -132,7 +141,7 @@ describe('权限卡片', () => {
 describe('终端占用（TERM_BUSY 等）', () => {
   const err = (title: string): CoreEvent => ({
     type: 'appNotice', sessionId: 's1', termId: 't1',
-    notice: { kind: 'error', title, text: '', noticeId: '', toolName: '', toolSummary: '', resolved: false },
+    notice: { kind: 'error', title, text: '', noticeId: '', toolName: '', toolSummary: '', resolved: false, truncated: false },
   });
 
   it('TERM_BUSY 通知使标签进入占用状态，并退出直通、撤掉权限卡片', () => {

@@ -4,7 +4,7 @@ import type { Ctx } from '../context.js';
 import { DuplicateError, type BanRecord, type DeviceRecord, type SessionRecord } from '../db/repos/index.js';
 import type { SignalControl } from '../signal/server.js';
 import { CONFIG_KEYS } from '../service/config-service.js';
-import { bufferToIp, ipToBuffer, isValidIpOrCidr, normalizeIp, rateKeyIp } from '../util/ip.js';
+import { banTargetFor, bufferToIp, ipToBuffer, isValidIpOrCidr, normalizeIp, rateKeyIp } from '../util/ip.js';
 import { compareVersions } from '../util/version.js';
 import { utcDate } from '../util/time.js';
 import { ARCHS, KINDS, PLATFORMS } from '../service/registration.js';
@@ -170,13 +170,17 @@ export function adminRoutes(app: FastifyInstance, ctx: Ctx, signal: SignalContro
 
       admin.post<{ Body: Body }>('/bans', async (req, reply) => {
         const b = req.body ?? {};
-        const kind = b.kind;
-        if (kind !== 'device' && kind !== 'ip' && kind !== 'cidr') return bad(reply, 'kind 只能是 device | ip | cidr');
+        if (b.kind !== 'device' && b.kind !== 'ip' && b.kind !== 'cidr') return bad(reply, 'kind 只能是 device | ip | cidr');
+        let kind: 'device' | 'ip' | 'cidr' = b.kind;
         if (typeof b.value !== 'string' || !b.value || b.value.length > 64) return bad(reply, 'value 必须是非空字符串');
         let value = b.value.trim();
         if (kind === 'ip') {
           if (!isValidIpOrCidr(value) || value.includes('/')) return bad(reply, 'value 不是合法的 IP');
           value = normalizeIp(value);
+          // IPv6 单个地址换一个就能绕过，统一封所在的 /64
+          const t = banTargetFor(value);
+          kind = t.kind;
+          value = t.value;
         } else if (kind === 'cidr') {
           if (!isValidIpOrCidr(value) || !value.includes('/')) return bad(reply, 'value 不是合法的 CIDR');
         }

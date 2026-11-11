@@ -2503,7 +2503,7 @@ mod tests {
         // 数据持续到来，直到被流控挡住
         let mut received = 0u64;
         let mut last_change = Instant::now();
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let deadline = Instant::now() + Duration::from_secs(120);
         while Instant::now() < deadline {
             match tokio::time::timeout(Duration::from_millis(200), r1.recv()).await {
                 Ok(Some(f)) => {
@@ -2515,7 +2515,11 @@ mod tests {
                 Ok(None) => break,
                 Err(_) => {}
             }
-            if received > 0 && last_change.elapsed() > Duration::from_secs(2) {
+            // 以“已进入暂停状态且数据静止”为准；负载高时 type/cat 启动慢，所以不按固定时长判断
+            if received > 0
+                && t.core.lock().flow.paused
+                && last_change.elapsed() > Duration::from_secs(2)
+            {
                 break;
             }
         }
@@ -2545,6 +2549,7 @@ mod tests {
                     }
                 }
                 _ => {
+                    // 数据已开始恢复并静止 300ms 即可；尚未收到任何数据则继续等到 deadline
                     if after_ack > 0 {
                         break;
                     }

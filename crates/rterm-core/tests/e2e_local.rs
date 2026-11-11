@@ -865,56 +865,7 @@ async fn full_local() {
     println!("  用户确认后连接成功，新公钥已记住，之后正常连接");
     e.core.disconnect(&sid).await.unwrap();
 
-    println!("== 7. 错误密码 5 次后锁定 ==");
-    let c = Node::start("C", &api, false).await;
-    let pw_before = host.password();
-    for i in 1..=5 {
-        let err = c
-            .core
-            .connect(&host.code(), "wrongpw1")
-            .await
-            .expect_err("错误密码应失败");
-        assert_eq!(err.code, "PASSWORD_WRONG", "第 {i} 次：{err}");
-        println!("  第 {i} 次错误密码 -> {}", err.code);
-    }
-    assert!(
-        wait_until(10, || host
-            .core
-            .local_info()
-            .locked_remaining_secs
-            .is_some())
-        .await,
-        "5 次失败后被控端应锁定"
-    );
-    let err = c
-        .core
-        .connect(&host.code(), &host.password())
-        .await
-        .expect_err("锁定期间应拒绝");
-    assert_eq!(err.code, "LOCKED", "{err}");
-    println!(
-        "  第 6 次（即使密码正确）-> {}（{}）",
-        err.code, err.message
-    );
-    assert!(
-        wait_until(5, || host.password() != pw_before).await,
-        "锁定触发时临时密码应已刷新"
-    );
-    println!(
-        "  被控端锁定剩余 {:?} 秒，临时密码已刷新",
-        host.core.local_info().locked_remaining_secs
-    );
-    assert!(
-        !host
-            .events(|e| match e {
-                CoreEvent::Notice { code, .. } if code == "HOST_LOCKED" => Some(()),
-                _ => None,
-            })
-            .is_empty(),
-        "应发出 HOST_LOCKED 通知事件"
-    );
-
-    println!("== 8. 服务端数据被重置（内存库重启）后自动重新注册 ==");
+    println!("== 7. 服务端数据被重置（内存库重启）后自动重新注册 ==");
     let (old_host_code, old_a_code) = (host.code(), a.code());
     drop(server); // 杀掉服务端进程
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -964,6 +915,55 @@ async fn full_local() {
     );
     println!("  重新注册后连接、终端、echo 正常");
     a.core.disconnect(&sid).await.unwrap();
+
+    println!("== 8. 错误密码 5 次后锁定（锁定会跨重启持久化，所以放在最后）==");
+    let c = Node::start("C", &api, false).await;
+    let pw_before = host.password();
+    for i in 1..=5 {
+        let err = c
+            .core
+            .connect(&host.code(), "wrongpw1")
+            .await
+            .expect_err("错误密码应失败");
+        assert_eq!(err.code, "PASSWORD_WRONG", "第 {i} 次：{err}");
+        println!("  第 {i} 次错误密码 -> {}", err.code);
+    }
+    assert!(
+        wait_until(10, || host
+            .core
+            .local_info()
+            .locked_remaining_secs
+            .is_some())
+        .await,
+        "5 次失败后被控端应锁定"
+    );
+    let err = c
+        .core
+        .connect(&host.code(), &host.password())
+        .await
+        .expect_err("锁定期间应拒绝");
+    assert_eq!(err.code, "LOCKED", "{err}");
+    println!(
+        "  第 6 次（即使密码正确）-> {}（{}）",
+        err.code, err.message
+    );
+    assert!(
+        wait_until(5, || host.password() != pw_before).await,
+        "锁定触发时临时密码应已刷新"
+    );
+    println!(
+        "  被控端锁定剩余 {:?} 秒，临时密码已刷新",
+        host.core.local_info().locked_remaining_secs
+    );
+    assert!(
+        !host
+            .events(|e| match e {
+                CoreEvent::Notice { code, .. } if code == "HOST_LOCKED" => Some(()),
+                _ => None,
+            })
+            .is_empty(),
+        "应发出 HOST_LOCKED 通知事件"
+    );
 
     println!("== 收尾 ==");
     for n in [&a, &b, &c, &d, &e, &f, &g, &host] {

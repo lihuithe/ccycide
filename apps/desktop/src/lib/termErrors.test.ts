@@ -4,7 +4,7 @@ import { defaultSettings } from '../backend/mockData';
 import { blockedStatusFromCode, blockedStatusFromNotice, blockedText, isBlocked } from './termErrors';
 
 const notice = (p: Partial<AppNotice>): AppNotice => ({
-  kind: 'error', title: '', text: '', noticeId: '', toolName: '', toolSummary: '', resolved: false, ...p,
+  kind: 'error', title: '', text: '', noticeId: '', toolName: '', toolSummary: '', resolved: false, truncated: false, ...p,
 });
 
 describe('终端级错误映射', () => {

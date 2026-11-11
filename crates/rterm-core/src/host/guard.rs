@@ -13,11 +13,13 @@
 //! 所有会跑 Argon2id 的函数（`new`、`refresh_temp_password`、`set_fixed_password`）是同步阻塞的
 //! （约几十到一百多毫秒），在异步环境里请放进 `spawn_blocking`。
 use std::collections::VecDeque;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
+use zeroize::Zeroizing;
 
 use crate::crypto::CryptoError;
 use crate::host::weak_passwords;
@@ -44,6 +46,25 @@ pub const RESET_AFTER: Duration = Duration::from_secs(7 * 24 * 3600);
 /// 派生失败返回错误，调用方必须当作失败处理，绝不能退化成全零之类的固定密钥（审查 L2）。
 pub type Kdf = Arc<dyn Fn(&str, &str) -> Result<[u8; 32], CryptoError> + Send + Sync>;
 type NowFn = Arc<dyn Fn() -> Instant + Send + Sync>;
+/// 墙钟（只用于锁定状态持久化时换算时间）。
+pub type WallFn = Arc<dyn Fn() -> SystemTime + Send + Sync>;
+/// 锁定状态变化时的持久化回调。在 Guard 的状态锁之外调用。
+pub type Persist = Arc<dyn Fn(&LockState) + Send + Sync>;
+
+const FAIL_WINDOW_MS: i64 = FAIL_WINDOW.as_millis() as i64;
+const RESET_AFTER_MS: i64 = RESET_AFTER.as_millis() as i64;
+const MAX_LOCK_MS: i64 = MAX_LOCK.as_millis() as i64;
+
+/// 需要持久化的锁定状态（与 `AccessSettings` 分开）。时间用 Unix 毫秒的墙钟，重启后可以换算回来。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LockState {
+    pub lock_level: u32,
+    /// 失败窗口内的失败时间
+    pub failures_ms: Vec<i64>,
+    pub last_failure_ms: Option<i64>,
+    pub locked_until_ms: Option<i64>,
+}
 
 /// 临时密码刷新策略。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -202,14 +223,16 @@ pub fn generate_temp_password() -> String {
 
 struct State {
     settings: AccessSettings,
-    temp_password: String,
+    /// 敏感内存：丢弃时清零（审查 L8）
+    temp_password: Zeroizing<String>,
     /// 派生失败时为 None：此时临时密码不可用（握手按密码错误处理），下次刷新再试
-    temp_key: Option<[u8; 32]>,
-    fixed_key: Option<[u8; 32]>,
-    failures: VecDeque<Instant>,
-    last_failure: Option<Instant>,
+    temp_key: Option<Zeroizing<[u8; 32]>>,
+    fixed_key: Option<Zeroizing<[u8; 32]>>,
+    /// 以下时间都是相对 `Guard::origin` 的毫秒（可为负：重启前发生的）
+    failures: VecDeque<i64>,
+    last_failure: Option<i64>,
     lock_level: u32,
-    locked_until: Option<Instant>,
+    locked_until: Option<i64>,
     active_sessions: usize,
     /// 已准入、握手尚未完成的会话数（也占用 `max_sessions`）
     handshaking: usize,
@@ -229,6 +252,10 @@ pub struct Guard {
     device_code: String,
     kdf: Kdf,
     now: NowFn,
+    origin: Instant,
+    /// `origin` 时刻对应的 Unix 毫秒
+    wall_origin_ms: i64,
+    persist: Mutex<Option<Persist>>,
     state: Mutex<State>,
     events: broadcast::Sender<GuardEvent>,
 }
@@ -245,7 +272,13 @@ impl Guard {
 
     /// 注入口令派生函数（测试用，避免依赖网络层的 Argon2）。
     pub fn with_kdf(device_code: &str, settings: AccessSettings, kdf: Kdf) -> Arc<Self> {
-        Self::build(device_code, settings, kdf, Arc::new(Instant::now))
+        Self::build(
+            device_code,
+            settings,
+            kdf,
+            Arc::new(Instant::now),
+            Arc::new(SystemTime::now),
+        )
     }
 
     /// 注入派生函数和时钟（测试锁定到期用）。
@@ -255,13 +288,30 @@ impl Guard {
         kdf: Kdf,
         now: Arc<dyn Fn() -> Instant + Send + Sync>,
     ) -> Arc<Self> {
-        Self::build(device_code, settings, kdf, now)
+        Self::build(device_code, settings, kdf, now, Arc::new(SystemTime::now))
     }
 
-    fn build(device_code: &str, settings: AccessSettings, kdf: Kdf, now: NowFn) -> Arc<Self> {
-        let temp = generate_temp_password();
+    /// 同时注入单调时钟和墙钟（测试"重启后锁定状态仍在"用）。
+    pub fn with_kdf_and_clocks(
+        device_code: &str,
+        settings: AccessSettings,
+        kdf: Kdf,
+        now: NowFn,
+        wall: WallFn,
+    ) -> Arc<Self> {
+        Self::build(device_code, settings, kdf, now, wall)
+    }
+
+    fn build(
+        device_code: &str,
+        settings: AccessSettings,
+        kdf: Kdf,
+        now: NowFn,
+        wall: WallFn,
+    ) -> Arc<Self> {
+        let temp = Zeroizing::new(generate_temp_password());
         let temp_key = match kdf(&temp, device_code) {
-            Ok(k) => Some(k),
+            Ok(k) => Some(Zeroizing::new(k)),
             Err(e) => {
                 tracing::error!("临时密码派生失败，临时密码暂不可用：{e}");
                 None
@@ -271,7 +321,13 @@ impl Guard {
         Arc::new(Self {
             device_code: device_code.to_string(),
             kdf,
+            origin: now(),
+            wall_origin_ms: wall()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0),
             now,
+            persist: Mutex::new(None),
             state: Mutex::new(State {
                 settings,
                 temp_password: temp,
@@ -292,6 +348,93 @@ impl Guard {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// 当前时刻（相对 `origin` 的毫秒）。
+    fn tick(&self) -> i64 {
+        (self.now)()
+            .saturating_duration_since(self.origin)
+            .as_millis() as i64
+    }
+
+    // ---------- 锁定状态持久化（审查 L9） ----------
+
+    /// 导出当前的锁定状态（门面在状态变化时保存）。
+    pub fn export_lock_state(&self) -> LockState {
+        let s = self.st();
+        LockState {
+            lock_level: s.lock_level,
+            failures_ms: s.failures.iter().map(|t| self.wall_origin_ms + t).collect(),
+            last_failure_ms: s.last_failure.map(|t| self.wall_origin_ms + t),
+            locked_until_ms: s.locked_until.map(|t| self.wall_origin_ms + t),
+        }
+    }
+
+    /// 启动时恢复。未来的时间被压到合理范围（时钟被往回拨时不会变成超长锁定）；
+    /// 级别衰减规则同 `report_auth_failure`：最近一次失败/锁定结束后超过 `RESET_AFTER` 没有失败则归零。
+    pub fn restore_lock_state(&self, st: &LockState) {
+        let now = self.tick();
+        let conv = |ms: i64| ms - self.wall_origin_ms;
+        let past = |ms: i64| conv(ms).min(now);
+        let mut s = self.st();
+        s.failures = st
+            .failures_ms
+            .iter()
+            .map(|t| past(*t))
+            .filter(|t| now - *t <= FAIL_WINDOW_MS)
+            .collect();
+        s.failures.make_contiguous().sort_unstable();
+        s.last_failure = st.last_failure_ms.map(past);
+        s.locked_until = st.locked_until_ms.map(|t| conv(t).min(now + MAX_LOCK_MS));
+        s.lock_level = st.lock_level.min(32);
+        let quiet = s.last_failure.into_iter().chain(s.locked_until).max();
+        if quiet.is_some_and(|t| now - t >= RESET_AFTER_MS) {
+            s.lock_level = 0;
+            s.last_failure = None;
+            s.locked_until = None;
+            s.failures.clear();
+        }
+    }
+
+    /// 设置持久化回调：每次失败计数、锁定状态变化后调用。
+    pub fn set_persist(&self, f: Persist) {
+        *self.persist.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
+    }
+
+    fn persist_now(&self) {
+        let f = self
+            .persist
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        if let Some(f) = f {
+            f(&self.export_lock_state());
+        }
+    }
+
+    /// 从 `path` 恢复锁定状态，并把之后的变化写回该文件（先写临时文件再改名）。门面启动时调一次。
+    pub fn attach_state_file(&self, path: &Path) {
+        match std::fs::read(path) {
+            Ok(b) => match serde_json::from_slice::<LockState>(&b) {
+                Ok(st) => self.restore_lock_state(&st),
+                Err(e) => tracing::warn!("锁定状态文件损坏，已忽略：{e}"),
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => tracing::warn!("读取锁定状态失败：{e}"),
+        }
+        let path = path.to_path_buf();
+        self.set_persist(Arc::new(move |st| {
+            let res = serde_json::to_vec(st)
+                .map_err(std::io::Error::other)
+                .and_then(|b| {
+                    let tmp = path.with_extension("json.tmp");
+                    std::fs::write(&tmp, b)?;
+                    std::fs::rename(&tmp, &path)
+                });
+            if let Err(e) = res {
+                tracing::warn!("保存锁定状态失败：{e}");
+            }
+        }));
+    }
+
     fn emit(&self, ev: GuardEvent) {
         let _ = self.events.send(ev);
     }
@@ -304,15 +447,15 @@ impl Guard {
 
     /// 当前临时密码（明文，仅用于界面显示，不要写日志）。
     pub fn temp_password(&self) -> String {
-        self.st().temp_password.clone()
+        self.st().temp_password.to_string()
     }
 
     /// 刷新临时密码并重算 `pw_key`。
     /// 派生失败时保留原来的临时密码和密钥（不会换成一个用不了的密码，更不会用全零密钥），并返回原密码。
     pub fn refresh_temp_password(&self) -> String {
-        let pw = generate_temp_password();
+        let pw = Zeroizing::new(generate_temp_password());
         let key = match (self.kdf)(&pw, &self.device_code) {
-            Ok(k) => k,
+            Ok(k) => Zeroizing::new(k),
             Err(e) => {
                 tracing::error!("刷新临时密码失败，保留原密码：{e}");
                 return self.temp_password();
@@ -324,22 +467,24 @@ impl Guard {
             s.temp_key = Some(key);
         }
         self.emit(GuardEvent::TempPasswordChanged);
-        pw
+        pw.to_string()
     }
 
     /// 设置固定密码。返回 `pw_key`，门面把它存进系统钥匙串（guard 本身不保存明文）。
     pub fn set_fixed_password(&self, password: &str) -> Result<[u8; 32], PasswordError> {
         validate_fixed_password(password, &self.device_code)?;
-        let key = (self.kdf)(password, &self.device_code)
-            .map_err(|e| PasswordError::Kdf(e.to_string()))?;
-        self.st().fixed_key = Some(key);
+        let key = Zeroizing::new(
+            (self.kdf)(password, &self.device_code)
+                .map_err(|e| PasswordError::Kdf(e.to_string()))?,
+        );
+        self.st().fixed_key = Some(key.clone());
         self.emit(GuardEvent::FixedPasswordChanged);
-        Ok(key)
+        Ok(*key)
     }
 
     /// 启动时用钥匙串里读出的 `pw_key` 恢复固定密码。
     pub fn load_fixed_pw_key(&self, key: [u8; 32]) {
-        self.st().fixed_key = Some(key);
+        self.st().fixed_key = Some(Zeroizing::new(key));
     }
 
     pub fn clear_fixed_password(&self) {
@@ -364,12 +509,12 @@ impl Guard {
 
     /// 信令上报用的 `accept`：允许被连接，且当前没有被锁定。
     pub fn accepting(&self) -> bool {
-        let now = (self.now)();
+        let now = self.tick();
         let s = self.st();
         s.settings.enabled && !Self::is_locked(&s, now)
     }
 
-    fn is_locked(s: &State, now: Instant) -> bool {
+    fn is_locked(s: &State, now: i64) -> bool {
         s.locked_until.is_some_and(|t| now < t)
     }
 
@@ -377,7 +522,7 @@ impl Guard {
 
     /// 处理一个传入连接请求（`connect.incoming`）。
     pub fn admit(&self) -> Admission {
-        let now = (self.now)();
+        let now = self.tick();
         let s = self.st();
         if !s.settings.enabled {
             return Admission::Reject { reason: "disabled" };
@@ -413,7 +558,7 @@ impl Guard {
     /// 握手阶段密码错误（包括"没有设置固定密码却收到 password_kind = 1"）。
     /// 返回触发的锁定时长（若本次触发了锁定）。
     pub fn report_auth_failure(&self) -> Option<Duration> {
-        let now = (self.now)();
+        let now = self.tick();
         let mut locked_for = None;
         let mut refresh = false;
         {
@@ -424,7 +569,7 @@ impl Guard {
                 (Some(a), Some(b)) => Some(a.max(b)),
                 (a, b) => a.or(b),
             };
-            if quiet_since.is_some_and(|t| now.saturating_duration_since(t) >= RESET_AFTER) {
+            if quiet_since.is_some_and(|t| now - t >= RESET_AFTER_MS) {
                 s.lock_level = 0;
             }
             s.last_failure = Some(now);
@@ -432,7 +577,7 @@ impl Guard {
             while s
                 .failures
                 .front()
-                .is_some_and(|t| now.duration_since(*t) > FAIL_WINDOW)
+                .is_some_and(|t| now - *t > FAIL_WINDOW_MS)
             {
                 s.failures.pop_front();
             }
@@ -442,12 +587,13 @@ impl Guard {
                     .saturating_mul(1u64 << s.lock_level.min(16));
                 let dur = Duration::from_secs(secs).min(MAX_LOCK);
                 s.lock_level = s.lock_level.saturating_add(1);
-                s.locked_until = Some(now + dur);
+                s.locked_until = Some(now + dur.as_millis() as i64);
                 s.failures.clear();
                 locked_for = Some(dur);
                 refresh = true;
             }
         }
+        self.persist_now();
         self.emit(GuardEvent::AuthFailed);
         if let Some(d) = locked_for {
             self.emit(GuardEvent::HostLocked { secs: d.as_secs() });
@@ -461,10 +607,13 @@ impl Guard {
 
     /// 握手成功，会话开始。
     pub fn report_auth_success(&self) {
-        let mut s = self.st();
-        s.active_sessions += 1;
-        // 成功的连接清掉失败窗口（锁定级别仍按 24 小时规则衰减）
-        s.failures.clear();
+        {
+            let mut s = self.st();
+            s.active_sessions += 1;
+            // 成功的连接清掉失败窗口（锁定级别仍按 7 天规则衰减）
+            s.failures.clear();
+        }
+        self.persist_now();
     }
 
     /// 会话结束。策略为"每次会话结束后刷新"时刷新临时密码。
@@ -480,15 +629,15 @@ impl Guard {
     }
 
     pub fn status(&self) -> GuardStatus {
-        let now = (self.now)();
+        let now = self.tick();
         let s = self.st();
         GuardStatus {
-            temp_password: s.temp_password.clone(),
+            temp_password: s.temp_password.to_string(),
             has_fixed_password: s.fixed_key.is_some(),
             locked_remaining: s
                 .locked_until
-                .and_then(|t| t.checked_duration_since(now))
-                .filter(|d| !d.is_zero()),
+                .filter(|t| *t > now)
+                .map(|t| Duration::from_millis((t - now) as u64)),
             settings: s.settings.clone(),
             active_sessions: s.active_sessions,
         }
@@ -511,14 +660,14 @@ impl Drop for HandshakeSlot {
 /// 被锁定、被关闭、没有该类密码时返回 `None`（网络层应按密码错误处理，并通知 guard 记一次失败）。
 impl HostPasswords for Guard {
     fn pw_key(&self, kind: u32) -> Option<[u8; 32]> {
-        let now = (self.now)();
+        let now = self.tick();
         let s = self.st();
         if !s.settings.enabled || Self::is_locked(&s, now) {
             return None;
         }
         match kind {
-            0 => s.temp_key,
-            1 => s.fixed_key,
+            0 => s.temp_key.as_deref().copied(),
+            1 => s.fixed_key.as_deref().copied(),
             _ => None,
         }
     }
@@ -960,5 +1109,162 @@ mod tests {
         .expect("json");
         assert!(s.enabled && s.require_confirm);
         assert_eq!(s.temp_password_policy, TempPolicy::AfterSession);
+    }
+
+    /// 一个共享的"墙钟 + 单调钟"，模拟进程重启：新 Guard 的单调钟从头开始，墙钟继续走。
+    struct World {
+        wall: Mutex<SystemTime>,
+    }
+    impl World {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                wall: Mutex::new(SystemTime::now()),
+            })
+        }
+        fn advance(&self, d: Duration) {
+            if let Ok(mut t) = self.wall.lock() {
+                *t += d;
+            }
+        }
+        /// 新进程：单调钟 = 创建时刻起的墙钟增量
+        fn boot(self: &Arc<Self>, clock: &Arc<Clock>) -> Arc<Guard> {
+            let w = self.clone();
+            let wall_fn: WallFn = Arc::new(move || *w.wall.lock().expect("wall"));
+            Guard::with_kdf_and_clocks(
+                "123456789",
+                AccessSettings::default(),
+                fake_kdf(),
+                clock.now_fn(),
+                wall_fn,
+            )
+        }
+    }
+
+    /// 同步推进"重启前"的两个时钟。
+    fn advance_both(w: &World, c: &Clock, d: Duration) {
+        w.advance(d);
+        c.advance(d);
+    }
+
+    /// 审查 L9：锁定状态重启后仍在，到期后解锁。
+    #[test]
+    fn lock_survives_restart_and_expires() {
+        let world = World::new();
+        let c1 = Clock::new();
+        let g1 = world.boot(&c1);
+        for _ in 0..5 {
+            g1.report_auth_failure();
+        }
+        assert_eq!(g1.admit(), Admission::Reject { reason: "locked" });
+        let saved = g1.export_lock_state();
+        let json = serde_json::to_string(&saved).expect("ser");
+        drop(g1);
+
+        // 重启：2 分钟后
+        world.advance(Duration::from_secs(120));
+        let c2 = Clock::new();
+        let g2 = world.boot(&c2);
+        assert_eq!(g2.admit(), Admission::Allow, "没恢复前是未锁定的");
+        g2.restore_lock_state(&serde_json::from_str(&json).expect("de"));
+        assert_eq!(g2.admit(), Admission::Reject { reason: "locked" });
+        assert!(g2.pw_key(0).is_none());
+        let rem = g2.status().locked_remaining.expect("remaining");
+        assert!(
+            rem > Duration::from_secs(470) && rem <= Duration::from_secs(480),
+            "{rem:?}"
+        );
+        // 锁定到期后解锁
+        advance_both(&world, &c2, Duration::from_secs(481));
+        assert_eq!(g2.admit(), Admission::Allow);
+        // 级别也恢复了：再失败 5 次是第二级（20 分钟）
+        let mut d = None;
+        for _ in 0..5 {
+            d = g2.report_auth_failure();
+        }
+        assert_eq!(d, Some(Duration::from_secs(1200)));
+    }
+
+    #[test]
+    fn restored_failures_count_toward_next_lock() {
+        let world = World::new();
+        let c1 = Clock::new();
+        let g1 = world.boot(&c1);
+        for _ in 0..4 {
+            g1.report_auth_failure();
+        }
+        let saved = g1.export_lock_state();
+        assert_eq!(saved.failures_ms.len(), 4);
+        world.advance(Duration::from_secs(60));
+        let g2 = world.boot(&Clock::new());
+        g2.restore_lock_state(&saved);
+        assert!(g2.report_auth_failure().is_some(), "第 5 次失败应触发锁定");
+        // 窗口外的失败不恢复
+        world.advance(Duration::from_secs(3600));
+        let g3 = world.boot(&Clock::new());
+        g3.restore_lock_state(&saved);
+        assert_eq!(g3.report_auth_failure(), None);
+    }
+
+    #[test]
+    fn restored_level_decays_after_7_quiet_days_and_clock_rollback_is_bounded() {
+        let world = World::new();
+        let g1 = world.boot(&Clock::new());
+        for _ in 0..5 {
+            g1.report_auth_failure();
+        }
+        let saved = g1.export_lock_state();
+        // 8 天后重启：级别归零
+        world.advance(Duration::from_secs(8 * 24 * 3600));
+        let g2 = world.boot(&Clock::new());
+        g2.restore_lock_state(&saved);
+        assert_eq!(g2.admit(), Admission::Allow);
+        let mut d = None;
+        for _ in 0..5 {
+            d = g2.report_auth_failure();
+        }
+        assert_eq!(d, Some(BASE_LOCK));
+        // 持久化的到期时间远在未来（时钟被回拨或文件被篡改）：最多锁 MAX_LOCK
+        let mut forged = saved.clone();
+        forged.locked_until_ms =
+            Some(forged.locked_until_ms.unwrap_or(0) + 10 * 365 * 24 * 3600 * 1000);
+        let g3 = world.boot(&Clock::new());
+        g3.restore_lock_state(&forged);
+        let rem = g3.status().locked_remaining.expect("locked");
+        assert!(rem <= MAX_LOCK);
+    }
+
+    #[test]
+    fn state_file_roundtrip_via_persist_callback() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let path = dir.path().join("guard-state.json");
+        let world = World::new();
+        let g1 = world.boot(&Clock::new());
+        g1.attach_state_file(&path);
+        for _ in 0..5 {
+            g1.report_auth_failure();
+        }
+        assert!(path.exists(), "失败后应写入状态文件");
+        world.advance(Duration::from_secs(30));
+        let g2 = world.boot(&Clock::new());
+        g2.attach_state_file(&path);
+        assert_eq!(g2.admit(), Admission::Reject { reason: "locked" });
+        // 损坏的文件被忽略（不崩溃、不锁定）
+        std::fs::write(&path, b"{not json").expect("w");
+        let g3 = world.boot(&Clock::new());
+        g3.attach_state_file(&path);
+        assert_eq!(g3.admit(), Admission::Allow);
+    }
+
+    /// 审查 L8：临时密码与密钥在 Guard 里是丢弃即清零的类型。
+    #[test]
+    fn sensitive_guard_fields_are_zeroize_on_drop() {
+        fn assert_zod<T: zeroize::ZeroizeOnDrop>() {}
+        assert_zod::<Zeroizing<String>>();
+        assert_zod::<Zeroizing<[u8; 32]>>();
+        let (g, _c) = guard_with_clock();
+        let st = g.st();
+        let _: &Zeroizing<String> = &st.temp_password;
+        let _: &Option<Zeroizing<[u8; 32]>> = &st.temp_key;
+        let _: &Option<Zeroizing<[u8; 32]>> = &st.fixed_key;
     }
 }

@@ -7,6 +7,8 @@ exclude = ["tools/spike-s2", "tools/spike-pty"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+repository = "https://github.com/lihuithe/ccycide"
 
 [profile.release]
 lto = "thin"

@@ -62,6 +62,8 @@ export const ErrorCodes = {
   /** 终端已被另一会话接管（同样可经 AppNotice 通道到达） */
   TERM_DETACHED: 'TERM_DETACHED',
   SPAWN_FAILED: 'SPAWN_FAILED',
+  /** set_fixed_password：长度、字符类别不足或命中常见弱口令；message 为中文原因 */
+  WEAK_PASSWORD: 'WEAK_PASSWORD',
   UNKNOWN: 'UNKNOWN',
 } as const;
 
@@ -382,6 +384,8 @@ export interface AppNotice {
   toolSummary: string;
   /** true 表示之前的同 id 通知已失效，撤掉卡片 */
   resolved: boolean;
+  /** true 表示工具参数被截断，远程看不全：不能在这里批准，只能拒绝或回到终端处理 */
+  truncated: boolean;
 }
 
 export interface CustomCommand {

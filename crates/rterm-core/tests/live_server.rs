@@ -441,3 +441,26 @@ async fn controller_cancel_notifies_host() {
         }
     }
 }
+
+/// 审查 H1：服务端下发的 `/v1/config` 带签名，客户端用公钥验签通过。
+/// 公钥取内置的；对本机 `dev:all`（每次启动生成临时密钥）需要设置 `RTERM_CONFIG_PUBKEY=<启动日志里的 config_pubkey>`。
+#[tokio::test]
+#[ignore = "需要运行中的服务端（RTERM_TEST_API）"]
+async fn live_config_is_signed_and_verifies() {
+    let net = NetOptions {
+        proxy: Some(String::new()),
+        use_system_certs: false,
+    };
+    let api = ApiClient::new(&api_url(), &net).expect("api");
+    let sc = api.get_config().await.expect("config");
+    let keys = rterm_core::config_sig::trusted_keys();
+    assert!(!keys.is_empty());
+    assert!(sc.config_sig.is_some(), "服务端没有下发 config_sig");
+    rterm_core::config_sig::verify_server_config(&sc, &keys).expect("验签失败");
+    // 篡改任何一项都应验签失败
+    let mut evil = sc.clone();
+    if let Some(a) = evil.adapters.first_mut() {
+        a["submit_key"] = serde_json::json!("\r;calc\r");
+    }
+    assert!(rterm_core::config_sig::verify_server_config(&evil, &keys).is_err());
+}

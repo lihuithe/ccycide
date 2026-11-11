@@ -228,6 +228,11 @@ describe('L10：服务端细节', () => {
     expect(() => loadConfig({ ...env, TICKET_SECRET: 'a-long-random-secret-value-1234', TICKET_SECRET_OLD: DEV_TICKET_SECRET })).toThrow(/开发默认/);
     expect(() => loadConfig(env)).toThrow(/TICKET_SECRET/);
     expect(loadConfig({ ...env, TICKET_SECRET: 'a-long-random-secret-value-1234' }).ticketSecret).toHaveLength(31);
+    // ADMIN_TOKEN：生产环境至少 32 个字符；不设置（关闭管理接口）仍然允许
+    const ok = { ...env, TICKET_SECRET: 'a-long-random-secret-value-1234' };
+    expect(() => loadConfig({ ...ok, ADMIN_TOKEN: 'short-token' })).toThrow(/ADMIN_TOKEN/);
+    expect(loadConfig({ ...ok, ADMIN_TOKEN: 'x'.repeat(32) }).adminToken).toHaveLength(32);
+    expect(loadConfig(ok).adminToken).toBe('');
     // 开发环境仍可回落到默认密钥
     expect(loadConfig({ STORE: 'memory' }).ticketSecret).toBe(DEV_TICKET_SECRET);
   });

@@ -4,7 +4,11 @@
 //! 可选环境变量：
 //! - `RTERM_TEST_CLI`：hook 命令的可执行文件（需要带 `hook [--statusline]` 子命令，例如 tools/spike-s2 里的 hookprobe.exe）。
 //!   设置后会验证状态回传（AppState / 状态栏）。
-//! - `RTERM_TEST_CWD`：Claude Code 的工作目录（默认系统临时目录）。
+//! - `RTERM_TEST_CWD`：Claude Code 的工作目录（默认本 crate 目录）。
+//!   前置条件：该目录必须已被 Claude Code 信任（该目录本身需已在 `~/.claude.json` 的 projects 里 hasTrustDialogAccepted=true；父目录已信任并不够，
+//!   做法：在其中手动运行一次 `claude` 并接受“信任此文件夹”），建议直接设 `RTERM_TEST_CWD` 指向一个已信任的目录，
+//!   否则画面会停在“Do you trust the files in this folder?”提示，测试等不到 Claude 主界面而失败。
+//!   系统临时目录通常未被信任，所以不再作为默认值。
 //! - `RTERM_TEST_SHELL`：用哪个 shell（默认 Windows 用 powershell，其他平台用默认 shell）。
 //!
 //! 全程不会向模型发送任何提问：只执行本地斜杠命令（/context 等）、按键，以及 press_enter=false 的消息。
@@ -163,8 +167,8 @@ async fn claude_end_to_end() {
     c.send(
         0,
         Body::Hello(pb::Hello {
-            proto_ver: 1,
-            min_proto_ver: 1,
+            proto_ver: 2,
+            min_proto_ver: 2,
             app_version: "e2e".into(),
             features: vec![
                 "app.actions".into(),
@@ -182,8 +186,8 @@ async fn claude_end_to_end() {
             String::new()
         }
     });
-    let cwd = std::env::var("RTERM_TEST_CWD")
-        .unwrap_or_else(|_| std::env::temp_dir().to_string_lossy().into_owned());
+    let cwd =
+        std::env::var("RTERM_TEST_CWD").unwrap_or_else(|_| env!("CARGO_MANIFEST_DIR").to_string());
     c.send(
         0,
         Body::TermOpen(pb::TermOpen {

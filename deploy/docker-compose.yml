@@ -103,6 +103,8 @@ services:
       PORT: "8080"
       MYSQL_URL: mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
       ADMIN_TOKEN: ${ADMIN_TOKEN}
+      # 配置签名私钥（base64 的 32 字节 Ed25519 seed）。留空则 /v1/config 不带签名，客户端会忽略下发的规则
+      CONFIG_SIGNING_KEY: ${CONFIG_SIGNING_KEY:-}
       # /v1/config 下发给客户端的信令地址
       SIGNAL_PUBLIC_URL: wss://${SIGNAL_DOMAIN}/v1/signal
       MIN_APP_VERSION: ${MIN_APP_VERSION:-0.1.0}

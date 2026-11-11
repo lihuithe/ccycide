@@ -27,6 +27,15 @@ export function rateKeyIp(ip: string): string {
   return `${g(0)}:${g(1)}:${g(2)}:${g(3)}::/64`;
 }
 
+/**
+ * 封禁一个来源时用的记录（安全审查 M1 遗留项）：IPv4 封单个地址（kind=ip），
+ * IPv6 封所在的 /64（kind=cidr）。只封单个 IPv6 地址等于没封：同一 /64 内换地址即可绕过。
+ */
+export function banTargetFor(ip: string): { kind: 'ip' | 'cidr'; value: string } {
+  const key = rateKeyIp(ip);
+  return key.endsWith('::/64') ? { kind: 'cidr', value: key } : { kind: 'ip', value: key };
+}
+
 /** IP 文本 -> VARBINARY(16) 存储格式（IPv4 为 4 字节，IPv6 为 16 字节）；非法返回 null */
 export function ipToBuffer(ip: string | null | undefined): Buffer | null {
   if (!ip) return null;
