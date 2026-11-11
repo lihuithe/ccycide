@@ -164,6 +164,7 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: '11.0'
       # 内置的默认服务器地址（编译时写入，见 crates/rterm-core/src/core.rs 的 DEFAULT_API_URL）
       RTERM_DEFAULT_API_URL: ${{ vars.RTERM_API_URL }}
+      HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -256,6 +257,24 @@ jobs:
           printf '{"plugins":{"updater":{"endpoints":["%s/v1/update/{{target}}/{{arch}}/{{current_version}}"]}}}' "$RTERM_DEFAULT_API_URL" > "$f"
           echo "TAURI_ENDPOINT_ARGS=--config src-tauri/tauri.endpoint.generated.json" >> "$GITHUB_ENV"
 
+      # 配置了 Apple 证书才启用正式签名；没配时走 tauri.conf.json 里的 ad-hoc 签名（signingIdentity "-"）
+      - name: macOS 签名配置（仅在配置了证书时）
+        if: runner.os == 'macOS' && env.HAS_APPLE_CERT == 'true'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -n "${!v}" ]; then
+              { echo "$v<<__EOF__"; echo "${!v}"; echo "__EOF__"; } >> "$GITHUB_ENV"
+            fi
+          done
+
       - name: 构建并上传到草稿 Release
         if: matrix.offline != true
         uses: tauri-apps/tauri-action@v0
@@ -264,13 +283,8 @@ jobs:
           # updater 包签名（所有平台）
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # macOS 签名与公证（Developer ID + 应用专用密码方式；其他平台这些变量为空，被忽略）
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # macOS 签名与公证的变量由上一步按需写入 GITHUB_ENV：没配证书时完全不设置，
+          # 否则空字符串也会让 tauri 去导入证书并失败
           # Azure Trusted Signing（WINDOWS_SIGN_MODE=azure 时由 trusted-signing-cli 读取）
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
