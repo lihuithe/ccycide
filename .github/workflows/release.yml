@@ -98,13 +98,13 @@ jobs:
           PRERELEASE: ${{ steps.meta.outputs.prerelease }}
         run: |
           set -euo pipefail
-          id="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[] | select(.tag_name==\"$TAG\") | .id" | head -n1)"
+          # 列表接口刚创建后有延迟，查找时重试几次；创建时直接从返回值取 id
+          find_id() { gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[] | select(.tag_name==\"$TAG\") | .id" | head -n1; }
+          id="$(find_id)"
           if [ -z "$id" ]; then
-            flags=(--draft --title "RTerm $TAG" --generate-notes --verify-tag)
-            [ "$PRERELEASE" = true ] && flags+=(--prerelease)
-            gh release create "$TAG" "${flags[@]}"
-            id="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[] | select(.tag_name==\"$TAG\") | .id" | head -n1)"
+            id="$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases"               -f tag_name="$TAG" -f name="RTerm $TAG" -F draft=true -F prerelease="$PRERELEASE"               -F generate_release_notes=true --jq .id)"
           fi
+          for _ in 1 2 3 4 5; do [ -n "$id" ] && break; sleep 3; id="$(find_id)"; done
           [ -n "$id" ] || { echo "::error::没能取得 Release id"; exit 1; }
           echo "release_id=$id" >> "$GITHUB_OUTPUT"
 
