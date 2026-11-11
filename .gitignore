@@ -34,3 +34,6 @@ tools/scratch/
 tools/conpty/
 *.msi
 *.zip
+
+# 发布时生成的 updater 端点配置（含服务器地址，不入库）
+apps/desktop/src-tauri/tauri.endpoint.generated.json

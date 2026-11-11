@@ -251,9 +251,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          f="$RUNNER_TEMP/tauri-endpoint.json"
+          # 写在项目目录里、用相对路径传给 tauri：Windows 的 RUNNER_TEMP 含反斜杠，转换路径容易出错
+          f=apps/desktop/src-tauri/tauri.endpoint.generated.json
           printf '{"plugins":{"updater":{"endpoints":["%s/v1/update/{{target}}/{{arch}}/{{current_version}}"]}}}' "$RTERM_DEFAULT_API_URL" > "$f"
-          echo "TAURI_ENDPOINT_ARGS=--config ${f//\\//}" >> "$GITHUB_ENV"
+          echo "TAURI_ENDPOINT_ARGS=--config src-tauri/tauri.endpoint.generated.json" >> "$GITHUB_ENV"
 
       - name: 构建并上传到草稿 Release
         if: matrix.offline != true

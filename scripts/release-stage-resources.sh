@@ -122,6 +122,9 @@ case "$TARGET" in
       # 脚本通过参数传入路径；-I 避免加载当前目录下的同名模块
       PYTHONIOENCODING=utf-8 "$PY" -I - "$NUPKG" "$RID" "$ARCH_DIR" "$CONPTY_DIR" <<'PYEOF'
 import sys, zipfile, os
+# -I 会忽略 PYTHONIOENCODING，CI 的 Windows 机器默认 cp1252 打印不了中文，这里显式改成 UTF-8
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
 nupkg, rid, arch, dest = sys.argv[1:5]
 want = {
     "conpty.dll": "runtimes/%s/native/conpty.dll" % rid,
