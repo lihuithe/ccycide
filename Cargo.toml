@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["crates/*", "apps/desktop/src-tauri"]
+# 验证用的独立小工程（各自带 [workspace]，单独 cargo run）
+exclude = ["tools/spike-s2", "tools/spike-pty"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[profile.release]
+lto = "thin"
+strip = true

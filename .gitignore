@@ -1,0 +1,36 @@
+# 构建产物与缓存
+target/
+target-*/
+node_modules/
+dist/
+.DS_Store
+*.log
+logs/
+.vite/
+**/.vite/
+*.tsbuildinfo
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/
+server/node_modules/
+ccycide-core-ws/
+
+# 本机凭据与密钥，不进仓库（真实服务器信息只放 *.local.md）
+*.local.md
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*deploy_key*
+id_rsa*
+id_ed25519*
+
+# 本机工作目录与工具配置
+scratch/
+tools/scratch/
+.claude/
+
+# 第三方二进制不入库（由 scripts/release-stage-resources.sh 从微软官方 NuGet 包下载，见 docs/发布流程.md）
+tools/conpty/
+*.msi
+*.zip

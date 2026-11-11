@@ -1,0 +1,12 @@
+[package]
+name = "rterm-proto"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+prost = "0.14"
+bytes = "1"
+
+[build-dependencies]
+prost-build = "0.14"
+protoc-bin-vendored = "3"

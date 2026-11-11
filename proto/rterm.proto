@@ -1,0 +1,250 @@
+syntax = "proto3";
+package rterm.v1;
+
+// 应用层 Frame（见《实现方案.md》4.6、18.10）。
+// 协议演进规则：只新增字段和消息，不改已有编号，不复用编号。
+
+message Frame {
+  uint32 channel = 1;          // 0 = 控制通道；其余由被控端分配
+  oneof body {
+    // —— 控制 ——
+    Hello        hello         = 10;
+    HelloAck     hello_ack     = 11;
+    Ping         ping          = 12;
+    Pong         pong          = 13;
+    Error        error         = 14;
+    Bye          bye           = 15;
+    // —— 终端管理（控制通道）——
+    TermOpen     term_open     = 20;
+    TermOpened   term_opened   = 21;
+    TermList     term_list     = 22;
+    TermListResp term_list_resp= 23;
+    TermAttach   term_attach   = 24;
+    TermClose    term_close    = 25;
+    // —— 终端数据（终端通道）——
+    TermOutput   term_output   = 30;
+    TermInput    term_input    = 31;
+    TermSubmit   term_submit   = 32;
+    TermResize   term_resize   = 33;
+    TermAck      term_ack      = 34;
+    TermState    term_state    = 35;
+    TermExit     term_exit     = 36;
+    // —— 文件（控制通道）——
+    FileBegin    file_begin    = 40;
+    FileAccept   file_accept   = 41;
+    FileChunk    file_chunk    = 42;
+    FileAck      file_ack      = 43;
+    FileEnd      file_end      = 44;
+    FileDone     file_done     = 45;
+    FileCancel   file_cancel   = 46;
+    // —— 应用功能映射 ——
+    ActionCatalog    action_catalog     = 50;   // 被控端 → 主控端，控制通道
+    TermAction       term_action        = 51;   // 主控端 → 被控端，终端通道
+    TermActionResult term_action_result = 52;   // 被控端 → 主控端，终端通道
+    AppState         app_state          = 53;   // 被控端 → 主控端，终端通道
+    AppNotice        app_notice         = 54;   // 被控端 → 主控端，终端通道
+    CommandList      command_list       = 55;   // 被控端 → 主控端，终端通道
+    CommandListReq   command_list_req   = 56;   // 主控端 → 被控端，终端通道
+  }
+}
+
+message Hello {
+  uint32 proto_ver     = 1;    // 当前协议版本
+  uint32 min_proto_ver = 2;    // 能兼容的最低版本
+  string app_version   = 3;
+  repeated string features = 4; // 能力列表，如 "file.upload" "term.submit" "app.actions" "app.state" "app.commands"
+}
+
+message HelloAck {
+  uint32 proto_ver = 1;        // 协商后的版本 = min(双方 proto_ver)
+  string app_version = 2;
+  repeated string features = 3;
+  HostInfo host = 4;
+}
+
+message HostInfo {
+  string platform = 1;         // windows | macos | linux
+  string arch = 2;
+  string hostname = 3;
+  string username = 4;
+  string home_dir = 5;
+  repeated ShellInfo shells = 6;
+  bool claude_available = 7;
+  string claude_version = 8;
+  uint64 max_file_size = 9;
+}
+
+message ShellInfo { string id = 1; string name = 2; string path = 3; bool is_default = 4; }
+
+message Ping { uint64 ts = 1; }
+message Pong { uint64 ts = 1; }
+message Error { string code = 1; string message = 2; uint64 ref_id = 3; }
+message Bye { string reason = 1; }
+
+enum Profile { PROFILE_SHELL = 0; PROFILE_CLAUDE = 1; PROFILE_CUSTOM = 2; }
+
+message TermOpen {
+  uint64 req_id = 1;
+  Profile profile = 2;
+  string shell_id = 3;         // 空 = 默认 shell
+  string cwd = 4;              // 空 = 用户主目录
+  uint32 cols = 5;
+  uint32 rows = 6;
+  string command = 7;          // PROFILE_CUSTOM 时使用
+  LaunchOptions launch = 8;    // PROFILE_CLAUDE 时的启动参数（18.7）
+}
+
+message TermOpened {
+  uint64 req_id = 1;
+  string term_id = 2;          // 被控端生成，重连时用它找回终端
+  uint32 channel = 3;
+  string title = 4;
+  string shell = 5;
+}
+
+message TermList {}
+message TermListResp { repeated TermInfo terms = 1; }
+message TermInfo {
+  string term_id = 1; string title = 2; Profile profile = 3; string cwd = 4;
+  uint64 created_at = 5; uint64 last_seq = 6; bool exited = 7; bool attached = 8;
+  uint32 channel = 9;          // 当前附着用的通道号（未附着、或被别的主控设备附着时为 0）
+  bool attached_by_other = 10; // 被另一个主控设备的存活会话附着着（界面显示“被其他设备占用”，此时 Attach 会得到 TERM_BUSY）
+}
+
+message TermAttach { uint64 req_id = 1; string term_id = 2; uint64 last_seq = 3; uint32 cols = 4; uint32 rows = 5; }
+message TermClose  { string term_id = 1; bool kill = 2; }
+
+message TermOutput { uint64 seq = 1; bytes data = 2; }   // seq = 这段数据在该终端输出流里的起始字节偏移
+message TermInput  { bytes data = 1; }                   // 直通按键
+message TermSubmit {
+  uint64 msg_id = 1;
+  string text = 2;                       // 第 n 个 U+FFFC 字符对应第 n 个附件；没有对应占位符的附件追加到末尾
+  repeated uint64 attachments = 3;       // file_id 列表
+  bool press_enter = 4;                  // 是否在末尾补回车
+}
+message TermResize { uint32 cols = 1; uint32 rows = 2; }
+message TermAck    { uint64 consumed = 1; }              // 主控端已渲染到的字节偏移
+message TermState  {                                     // 被控端观察到的终端模式
+  bool bracketed_paste = 1; bool alt_screen = 2; bool app_cursor = 3; bool mouse = 4; string title = 5;
+}
+message TermExit   { int32 code = 1; }
+
+message FileBegin  { uint64 file_id = 1; string name = 2; uint64 size = 3; string mime = 4; }
+message FileAccept { uint64 file_id = 1; }
+message FileChunk  { uint64 file_id = 1; uint64 offset = 2; bytes data = 3; }
+message FileAck    { uint64 file_id = 1; uint64 received = 2; }
+message FileEnd    { uint64 file_id = 1; bytes sha256 = 2; }
+message FileDone   { uint64 file_id = 1; string remote_path = 2; }
+message FileCancel { uint64 file_id = 1; string reason = 2; }
+
+// —— 应用功能映射（18.10）——
+
+// 动作目录。HelloAck 之后由被控端发送一次；目录更新时再次发送。
+message ActionCatalog {
+  string catalog_ver = 1;
+  string app = 2;                        // "claude"
+  repeated ActionDef actions = 3;
+  map<string, OptionList> options = 4;   // 公共选项表，如 models、efforts
+}
+message OptionList { repeated ParamOption items = 1; }
+message ParamOption { string value = 1; string label = 2; }
+
+message ActionDef {
+  string id = 1;
+  string title = 2;
+  string group = 3;
+  string placement = 4;                  // toolbar | menu | palette_only
+  string kind = 5;                       // submit | keys | interactive
+  repeated ActionParam params = 6;
+  string confirm = 7;                    // 非空表示执行前要确认，内容是提示语
+  string note = 8;
+  string enabled_when = 9;               // 空 | busy | idle
+}
+message ActionParam {
+  string name = 1;
+  string label = 2;
+  string type = 3;                       // enum | text | path
+  string options_ref = 4;
+  bool allow_custom = 5;
+  bool required = 6;
+  string default_value = 7;
+}
+// 注意：动作的执行步骤（steps）不发给主控端，只在被控端使用。
+
+message TermAction {
+  uint64 req_id = 1;
+  string action_id = 2;
+  map<string, string> args = 3;
+}
+message TermActionResult {
+  uint64 req_id = 1;
+  bool ok = 2;
+  string error = 3;
+  bool passthrough = 4;                  // 主控端应进入临时直通
+  repeated string return_keys = 5;
+}
+
+message AppState {
+  string app = 1;                        // "claude"；空表示该终端里没有运行已知应用
+  bool running = 2;
+  bool stateful = 3;                     // 是否有状态回传。false 时下面的字段无意义
+  string version = 4;
+  string activity = 5;                   // idle | busy | waiting_permission
+  string model = 6;                      // 显示名
+  string model_id = 7;
+  string effort = 8;
+  bool fast_mode = 9;
+  bool thinking = 10;
+  uint32 context_used_pct = 11;          // 0-100；未知时为 0 且 has_context 为 false
+  bool has_context = 12;
+  string cwd = 13;
+  string session_id = 14;
+  string session_name = 15;
+  double cost_usd = 16;
+}
+
+message AppNotice {
+  string kind = 1;                       // permission | done | error | need_input
+  string title = 2;
+  string text = 3;
+  uint64 notice_id = 4;                  // 权限卡片用它和后续操作对应
+  string tool_name = 5;
+  string tool_summary = 6;
+  bool resolved = 7;                     // true 表示之前的同 id 通知已失效，撤掉卡片
+  bool truncated = 8;                    // 权限卡片的工具摘要超过上限被截断：被控端会拒绝 permission.allow，只能拒绝或回终端处理
+}
+
+message CommandListReq {}
+message CommandList { repeated CustomCommand commands = 1; }
+message CustomCommand {
+  string name = 1;                       // 不含斜杠
+  string description = 2;
+  string argument_hint = 3;
+  string source = 4;                     // user | project
+}
+
+message LaunchOptions {
+  string model = 1;
+  string permission_mode = 2;
+  string effort = 3;
+  string resume = 4;                     // 空 | continue | pick
+  string session_name = 5;
+}
+
+// —— 握手消息（明文，记录类型 0x01，见《开发指南.md》T8）——
+message Handshake {
+  oneof body {
+    PakeInit    init    = 1;
+    PakeResp    resp    = 2;
+    PakeConfirm confirm = 3;
+  }
+}
+message PakeInit {
+  uint32 proto_ver = 1;
+  bytes spake_msg = 2;
+  bytes public_key = 3;
+  bytes nonce = 4;
+  uint32 password_kind = 5;   // 0 临时密码，1 固定密码
+}
+message PakeResp    { bytes spake_msg = 1; bytes public_key = 2; bytes nonce = 3; }
+message PakeConfirm { bytes mac = 1; bytes signature = 2; }
