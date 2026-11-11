@@ -1,0 +1,204 @@
+{
+  "catalog_ver": "2026-11-11",
+  "app": "claude",
+  "match": { "version": ">=2.1.0" },
+  "options": {
+    "models": [
+      { "value": "default", "label": "默认" },
+      { "value": "opus", "label": "Opus" },
+      { "value": "sonnet", "label": "Sonnet" },
+      { "value": "haiku", "label": "Haiku" },
+      { "value": "fable", "label": "Fable" },
+      { "value": "opus[1m]", "label": "Opus（1M 上下文）" },
+      { "value": "sonnet[1m]", "label": "Sonnet（1M 上下文）" },
+      { "value": "opusplan", "label": "计划用 Opus，执行用 Sonnet" }
+    ],
+    "efforts": ["low", "medium", "high", "xhigh", "max", "auto"],
+    "permission_modes": ["default", "acceptEdits", "plan", "auto"],
+    "on_off": [
+      { "value": "on", "label": "开" },
+      { "value": "off", "label": "关" }
+    ]
+  },
+  "actions": [
+    {
+      "id": "model.set", "title": "切换模型", "group": "模型", "placement": "toolbar", "kind": "submit",
+      "params": [
+        { "name": "model", "label": "模型", "type": "enum", "options_ref": "models", "allow_custom": true,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:\\-\\[\\]/]{0,79}$", "required": true }
+      ],
+      "steps": [ { "submit": "/model {model}" } ],
+      "note": "Claude Code 会同时把它保存为默认模型；只想本次会话生效请用“模型选择菜单”并按 s"
+    },
+    {
+      "id": "effort.set", "title": "思考强度", "group": "模型", "placement": "toolbar", "kind": "submit",
+      "params": [
+        { "name": "level", "label": "强度", "type": "enum", "options_ref": "efforts", "required": true }
+      ],
+      "steps": [ { "submit": "/effort {level}" } ]
+    },
+    {
+      "id": "mode.cycle", "title": "切换权限模式", "group": "权限", "placement": "toolbar", "kind": "keys",
+      "steps": [ { "keys": ["shift+tab"] } ],
+      "platform_overrides": { "windows_no_vt": { "steps": [ { "keys": ["alt+m"] } ] } }
+    },
+    {
+      "id": "interrupt", "title": "停止", "group": "会话", "placement": "toolbar", "kind": "keys",
+      "steps": [ { "keys": ["esc"] } ],
+      "enabled_when": "busy"
+    },
+    {
+      "id": "fast.set", "title": "快速模式", "group": "模型", "placement": "menu", "kind": "submit",
+      "params": [
+        { "name": "state", "label": "开关", "type": "enum", "options_ref": "on_off", "required": true }
+      ],
+      "steps": [ { "submit": "/fast {state}" } ]
+    },
+    {
+      "id": "thinking.toggle", "title": "思考 开/关", "group": "模型", "placement": "menu", "kind": "keys",
+      "steps": [ { "keys": ["alt+t"] } ]
+    },
+    {
+      "id": "plan.enter", "title": "进入计划模式", "group": "权限", "placement": "menu", "kind": "submit",
+      "params": [
+        { "name": "description", "label": "任务描述（可空）", "type": "text", "required": false }
+      ],
+      "steps": [ { "submit": "/plan {description}" } ]
+    },
+    {
+      "id": "model.menu", "title": "模型选择菜单", "group": "模型", "placement": "menu", "kind": "interactive",
+      "steps": [ { "submit": "/model" } ],
+      "return_keys": ["enter", "esc"]
+    },
+    {
+      "id": "session.clear", "title": "清空对话", "group": "会话", "placement": "menu", "kind": "submit",
+      "confirm": "清空后当前对话的上下文将丢失",
+      "steps": [ { "submit": "/clear" } ]
+    },
+    {
+      "id": "session.compact", "title": "压缩上下文", "group": "会话", "placement": "menu", "kind": "submit",
+      "params": [
+        { "name": "instructions", "label": "压缩说明（可空）", "type": "text", "required": false }
+      ],
+      "steps": [ { "submit": "/compact {instructions}" } ]
+    },
+    {
+      "id": "context.show", "title": "上下文用量详情", "group": "会话", "placement": "toolbar", "kind": "submit",
+      "steps": [ { "submit": "/context" } ]
+    },
+    {
+      "id": "session.resume", "title": "恢复历史会话", "group": "会话", "placement": "menu", "kind": "interactive",
+      "steps": [ { "submit": "/resume" } ],
+      "return_keys": ["enter", "esc"]
+    },
+    {
+      "id": "session.rewind", "title": "回退到检查点", "group": "会话", "placement": "menu", "kind": "interactive",
+      "steps": [ { "submit": "/rewind" } ],
+      "return_keys": ["enter", "esc"]
+    },
+    {
+      "id": "session.rename", "title": "重命名会话", "group": "会话", "placement": "menu", "kind": "submit",
+      "params": [
+        { "name": "name", "label": "名称", "type": "text", "required": true }
+      ],
+      "steps": [ { "submit": "/rename {name}" } ]
+    },
+    {
+      "id": "dir.add", "title": "添加工作目录", "group": "目录", "placement": "menu", "kind": "submit",
+      "params": [
+        { "name": "path", "label": "目录", "type": "path", "required": true }
+      ],
+      "steps": [ { "submit": "/add-dir {path}" } ]
+    },
+    {
+      "id": "dir.cd", "title": "切换工作目录", "group": "目录", "placement": "menu", "kind": "submit",
+      "params": [
+        { "name": "path", "label": "目录", "type": "path", "required": true }
+      ],
+      "steps": [ { "submit": "/cd {path}" } ]
+    },
+    {
+      "id": "usage.show", "title": "用量和额度", "group": "信息", "placement": "menu", "kind": "interactive",
+      "steps": [ { "submit": "/usage" } ],
+      "return_keys": ["esc", "enter"]
+    },
+    {
+      "id": "review.code", "title": "代码审查", "group": "项目", "placement": "menu", "kind": "submit",
+      "steps": [ { "submit": "/code-review" } ]
+    },
+    {
+      "id": "diff.show", "title": "查看改动", "group": "项目", "placement": "menu", "kind": "interactive",
+      "steps": [ { "submit": "/diff" } ],
+      "return_keys": ["esc"]
+    },
+    {
+      "id": "project.init", "title": "初始化项目说明", "group": "项目", "placement": "menu", "kind": "submit",
+      "steps": [ { "submit": "/init" } ]
+    },
+    {
+      "id": "session.export", "title": "导出对话", "group": "会话", "placement": "menu", "kind": "submit",
+      "params": [
+        { "name": "filename", "label": "文件名（可空）", "type": "text", "required": false }
+      ],
+      "steps": [ { "submit": "/export {filename}" } ]
+    },
+    {
+      "id": "permissions.show", "title": "权限规则", "group": "权限", "placement": "menu", "kind": "interactive",
+      "steps": [ { "submit": "/permissions" } ],
+      "return_keys": ["esc"]
+    },
+    {
+      "id": "mcp.show", "title": "MCP 服务", "group": "设置", "placement": "menu", "kind": "interactive",
+      "steps": [ { "submit": "/mcp" } ],
+      "return_keys": ["esc"]
+    },
+    {
+      "id": "config.show", "title": "设置", "group": "设置", "placement": "menu", "kind": "interactive",
+      "steps": [ { "submit": "/config" } ],
+      "return_keys": ["esc"]
+    },
+    {
+      "id": "memory.show", "title": "记忆文件", "group": "设置", "placement": "menu", "kind": "interactive",
+      "steps": [ { "submit": "/memory" } ],
+      "return_keys": ["esc", "enter"]
+    },
+    {
+      "id": "verbose.toggle", "title": "详细输出 开/关", "group": "视图", "placement": "menu", "kind": "keys",
+      "steps": [ { "keys": ["ctrl+o"] } ]
+    },
+    {
+      "id": "background.run", "title": "转入后台运行", "group": "视图", "placement": "menu", "kind": "keys",
+      "steps": [ { "keys": ["ctrl+b"] } ]
+    },
+    {
+      "id": "todos.toggle", "title": "任务列表", "group": "视图", "placement": "menu", "kind": "keys",
+      "steps": [ { "keys": ["ctrl+t"] } ]
+    },
+    {
+      "id": "tasks.show", "title": "后台任务", "group": "视图", "placement": "menu", "kind": "interactive",
+      "steps": [ { "submit": "/tasks" } ],
+      "return_keys": ["esc"]
+    },
+    {
+      "id": "account.login", "title": "登录", "group": "设置", "placement": "menu", "kind": "interactive",
+      "steps": [ { "submit": "/login" } ],
+      "return_keys": ["esc", "enter"],
+      "note": "会在被控端打开浏览器或显示链接，请在终端画面里按提示操作"
+    },
+    {
+      "id": "app.exit", "title": "退出 Claude Code", "group": "会话", "placement": "menu", "kind": "submit",
+      "confirm": "退出后该终端回到 shell",
+      "steps": [ { "submit": "/exit" } ]
+    },
+    {
+      "id": "permission.allow", "title": "允许", "group": "权限", "placement": "palette_only", "kind": "keys", "hidden": true,
+      "params": [ { "name": "notice_id", "label": "通知编号", "type": "text", "required": true } ],
+      "steps": [ { "keys": ["enter"] } ]
+    },
+    {
+      "id": "permission.deny", "title": "拒绝", "group": "权限", "placement": "palette_only", "kind": "keys", "hidden": true,
+      "params": [ { "name": "notice_id", "label": "通知编号", "type": "text", "required": true } ],
+      "steps": [ { "keys": ["esc"] } ]
+    }
+  ]
+}
