@@ -87,7 +87,14 @@ impl Ctl {
                 }
             }
             self.buf = rest;
-            if String::from_utf8_lossy(&text).contains(needle) {
+            // needle 为 ">" 时表示“等到任意 shell 提示符”：cmd/PowerShell 是 >，bash 是 $，zsh 是 %，root 是 #
+            let seen = String::from_utf8_lossy(&text);
+            let hit = if needle == ">" {
+                seen.contains(['>', '$', '%', '#'])
+            } else {
+                seen.contains(needle)
+            };
+            if hit {
                 break;
             }
             let left = deadline.saturating_duration_since(Instant::now());

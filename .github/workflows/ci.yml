@@ -271,7 +271,7 @@ jobs:
           [ "${ok:-0}" = 1 ] || { echo '信令未能启动：'; cat signal.log; exit 1; }
           echo
           # 管理接口带令牌可访问，说明 Redis 限流器与 MySQL 仓储都在工作
-          curl -fsS -H "Authorization: Bearer ci-admin-token" http://127.0.0.1:18080/v1/admin/stats
+          curl -fsS -H "Authorization: Bearer $ADMIN_TOKEN" http://127.0.0.1:18080/v1/admin/stats
           echo
           # 不带令牌必须被拒
           code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/v1/admin/stats)
