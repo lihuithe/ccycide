@@ -454,11 +454,30 @@ impl Guard {
     /// 派生失败时保留原来的临时密码和密钥（不会换成一个用不了的密码，更不会用全零密钥），并返回原密码。
     pub fn refresh_temp_password(&self) -> String {
         let pw = Zeroizing::new(generate_temp_password());
-        let key = match (self.kdf)(&pw, &self.device_code) {
+        if self.install_temp_password(&pw) {
+            pw.to_string()
+        } else {
+            self.temp_password()
+        }
+    }
+
+    /// 恢复一个之前保存的临时密码（“仅手动刷新”策略下跨重启保持不变）。
+    /// 格式不像临时密码（被篡改或损坏）时拒绝并返回 false，调用方继续用新生成的密码。
+    pub fn restore_temp_password(&self, saved: &str) -> bool {
+        if !looks_like_temp_password(saved) {
+            tracing::warn!("保存的临时密码格式不对，已忽略");
+            return false;
+        }
+        self.install_temp_password(&Zeroizing::new(saved.to_string()))
+    }
+
+    /// 派生密钥并替换当前临时密码；派生失败时保留原密码并返回 false。
+    fn install_temp_password(&self, pw: &Zeroizing<String>) -> bool {
+        let key = match (self.kdf)(pw, &self.device_code) {
             Ok(k) => Zeroizing::new(k),
             Err(e) => {
-                tracing::error!("刷新临时密码失败，保留原密码：{e}");
-                return self.temp_password();
+                tracing::error!("临时密码派生失败，保留原密码：{e}");
+                return false;
             }
         };
         {
@@ -467,7 +486,7 @@ impl Guard {
             s.temp_key = Some(key);
         }
         self.emit(GuardEvent::TempPasswordChanged);
-        pw.to_string()
+        true
     }
 
     /// 设置固定密码。返回 `pw_key`，门面把它存进系统钥匙串（guard 本身不保存明文）。
@@ -877,6 +896,18 @@ mod tests {
         assert_ne!(p1, p2);
         assert_ne!(g.pw_key(0), k1);
         assert_eq!(g.pw_key(0), Some(fake_key(&p2, "123456789")));
+    }
+
+    #[test]
+    fn restore_saved_temp_password() {
+        let g = Guard::with_kdf("123456789", AccessSettings::default(), fake_kdf());
+        // 恢复一个合法的临时密码：明文和派生密钥都换成它
+        assert!(g.restore_temp_password("k3m7n9p2"));
+        assert_eq!(g.temp_password(), "k3m7n9p2");
+        assert_eq!(g.pw_key(0), Some(fake_key("k3m7n9p2", "123456789")));
+        // 格式不对（被篡改或损坏）的拒绝，保留原密码
+        assert!(!g.restore_temp_password("not a temp pw"));
+        assert_eq!(g.temp_password(), "k3m7n9p2");
     }
 
     #[test]

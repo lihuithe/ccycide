@@ -203,6 +203,11 @@ function patchTerm(m: AppModel, key: string | undefined, f: (t: TermTab) => Term
 }
 
 /** 标签进入占用/被接管/已不存在状态：退出直通，清掉权限卡片 */
+/** Claude Code 标签，或 shell 标签里正在运行 claude */
+function isClaudeTab(t: TermTab): boolean {
+  return t.profile === 'claude' || (t.app?.app === 'claude' && t.app.running);
+}
+
 function blockedTab(t: TermTab, status: BlockedStatus): TermTab {
   return { ...t, status, passthrough: 'off', autoPassthrough: false, returnKeys: [], permissionCard: null };
 }
@@ -261,8 +266,9 @@ function applyCore(m: AppModel, e: CoreEvent, now: number): AppModel {
       const key = findTermKey(m, e.sessionId, e.termId);
       return patchTerm(m, key, (t) => {
         let { passthrough, autoPassthrough } = t;
-        // 通用 shell 标签进入备用屏幕自动直通，退出时切回；Claude Code 标签不自动切换
-        if (t.profile !== 'claude') {
+        // 通用 shell 标签进入备用屏幕自动直通，退出时切回；
+        // Claude Code 标签、以及 shell 标签里正在运行 claude 时不自动切换（它会用备用屏幕，但输入应走输入框）
+        if (!isClaudeTab(t)) {
           if (e.state.altScreen && passthrough === 'off') {
             passthrough = 'on';
             autoPassthrough = true;
@@ -280,14 +286,21 @@ function applyCore(m: AppModel, e: CoreEvent, now: number): AppModel {
     }
     case 'appState': {
       const key = findTermKey(m, e.sessionId, e.termId);
-      return patchTerm(m, key, (t) => ({
-        ...t,
-        app: e.state,
-        // 不再处于等待确认时，权限卡片失效
-        permissionCard: e.state.stateful && e.state.activity !== 'waiting_permission' ? null : t.permissionCard,
-        // 应用退出后不应还停在临时直通
-        ...(!e.state.running && t.passthrough === 'temp' ? { passthrough: 'off' as const, returnKeys: [] } : {}),
-      }));
+      return patchTerm(m, key, (t) => {
+        const next: TermTab = {
+          ...t,
+          app: e.state,
+          // 不再处于等待确认时，权限卡片失效
+          permissionCard: e.state.stateful && e.state.activity !== 'waiting_permission' ? null : t.permissionCard,
+          // 应用退出后不应还停在临时直通
+          ...(!e.state.running && t.passthrough === 'temp' ? { passthrough: 'off' as const, returnKeys: [] } : {}),
+        };
+        // 先收到备用屏幕、后识别出 claude：撤销那次自动直通
+        if (isClaudeTab(next) && next.autoPassthrough) {
+          return { ...next, passthrough: next.passthrough === 'on' ? 'off' : next.passthrough, autoPassthrough: false };
+        }
+        return next;
+      });
     }
     case 'appNotice': {
       const key = findTermKey(m, e.sessionId, e.termId);

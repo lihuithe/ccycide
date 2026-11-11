@@ -369,8 +369,21 @@ function ComposerImpl({ tab, sessionReady, features, maxFileSize, uploads, dragg
 export const Composer = memo(ComposerImpl);
 
 /** 直通模式下替代输入框的提示条 */
-export function PassthroughBar({ tab, onExit }: { tab: TermTab; onExit: () => void }) {
+export function PassthroughBar({ tab, collapsed = false, onExit }: { tab: TermTab; collapsed?: boolean; onExit: () => void }) {
   const temp = tab.passthrough === 'temp';
+  if (collapsed) {
+    return (
+      <div className="pass-bar collapsed">
+        <span className="pass-dot" />
+        <span>操作区已折叠，键盘直接输入终端</span>
+        <span className="spacer" />
+        <button type="button" className="btn small" onClick={onExit} title="展开操作区">
+          <Icon name="up" size={12} />
+          展开
+        </button>
+      </div>
+    );
+  }
   return (
     <div className="pass-bar">
       <span className="pass-dot" />

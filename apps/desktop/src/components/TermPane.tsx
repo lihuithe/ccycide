@@ -27,6 +27,10 @@ interface Props {
 function TermPaneImpl({ tab, session, active, uploads, dragging, onOpenPalette }: Props) {
   const c = useController();
   const [searchOpen, setSearchOpen] = useState(false);
+  // 操作区（Claude 工具条 + 输入框）折叠：折叠时进入直通，键盘直接输入终端；
+  // 在别处退出直通（Ctrl+Shift+P 等）时自动视为展开
+  const [opsCollapsedRaw, setOpsCollapsed] = useState(false);
+  const opsCollapsed = opsCollapsedRaw && tab.passthrough === 'on';
   const phase = session?.phase;
   const ready = phase === 'ready';
   const features = session?.features ?? NO_FEATURES;
@@ -90,12 +94,36 @@ function TermPaneImpl({ tab, session, active, uploads, dragging, onOpenPalette }
 
       <TermView tabKey={tab.key} active={active} searchOpen={searchOpen} onSearchClose={() => setSearchOpen(false)} />
 
-      {showToolbar && session?.catalog && (
+      {showToolbar && !opsCollapsed && session?.catalog && (
         <ClaudeToolbar model={actionModel} catalog={session.catalog} app={tab.app} onRun={run} onOpenPalette={onOpenPalette} />
       )}
       {card && <PermissionCard notice={card} catalog={session?.catalog} enabled={ready} onRun={run} />}
 
-      {tab.passthrough !== 'off' && <PassthroughBar tab={tab} onExit={() => c.setPassthrough(tab.key, 'off')} />}
+      {tab.passthrough !== 'off' && (
+        <PassthroughBar
+          tab={tab}
+          collapsed={opsCollapsed}
+          onExit={() => {
+            setOpsCollapsed(false);
+            c.setPassthrough(tab.key, 'off');
+          }}
+        />
+      )}
+      {tab.passthrough === 'off' && ready && tab.status === 'open' && (
+        <div className="ops-handle">
+          <button
+            type="button"
+            className="ops-handle-btn"
+            title="折叠操作区（键盘直接输入终端）"
+            onClick={() => {
+              setOpsCollapsed(true);
+              c.setPassthrough(tab.key, 'on');
+            }}
+          >
+            <Icon name="down" size={12} />
+          </button>
+        </div>
+      )}
       <div className={tab.passthrough !== 'off' || tab.status === 'exited' || isBlocked(tab.status) ? 'composer-hidden' : ''}>
         <Composer
           tab={tab}

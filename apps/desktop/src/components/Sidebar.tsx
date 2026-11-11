@@ -10,6 +10,7 @@ import { IconButton, Icon } from './common';
 export function Sidebar({ model, onSettings, onFixedPassword }: { model: AppModel; onSettings: () => void; onFixedPassword: () => void }) {
   const c = useController();
   const [code, setCode] = useState('');
+  const [showPw, setShowPw] = useState(false);
   const pwRef = useRef<HTMLInputElement>(null);
   const { local, settings, incoming } = model;
   const now = useNow(incoming.length > 0);
@@ -38,7 +39,8 @@ export function Sidebar({ model, onSettings, onFixedPassword }: { model: AppMode
             </div>
             <div className="pw-row">
               <span className="pw-label">密码</span>
-              <span className="pw-value">{local.tempPassword}</span>
+              <span className="pw-value">{showPw ? local.tempPassword : '••••••••'}</span>
+              <IconButton icon={showPw ? 'eyeOff' : 'eye'} title={showPw ? '隐藏密码' : '显示密码'} onClick={() => setShowPw((v) => !v)} />
               <IconButton icon="copy" title="复制密码" onClick={() => void c.copy(local.tempPassword)} />
               <IconButton icon="refresh" title="刷新临时密码" onClick={() => void c.refreshPassword()} />
               <IconButton icon="key" title={local.fixedPasswordSet ? '固定密码（已设置）' : '设置固定密码'} onClick={onFixedPassword} active={local.fixedPasswordSet} />

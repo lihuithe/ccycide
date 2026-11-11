@@ -79,6 +79,21 @@ describe('终端直通', () => {
     expect(m.terms.k1.passthrough).toBe('off');
   });
 
+  it('shell 标签里运行 claude 时不自动直通', () => {
+    let m = withTerm('shell');
+    m = run(m, core({ type: 'appState', sessionId: 's1', termId: 't1', state: app() }));
+    m = run(m, core({ type: 'termState', sessionId: 's1', termId: 't1', state: modes({ altScreen: true }) }));
+    expect(m.terms.k1.passthrough).toBe('off');
+  });
+
+  it('先进备用屏幕、后识别出 claude：撤销自动直通', () => {
+    let m = withTerm('shell');
+    m = run(m, core({ type: 'termState', sessionId: 's1', termId: 't1', state: modes({ altScreen: true }) }));
+    expect(m.terms.k1.passthrough).toBe('on');
+    m = run(m, core({ type: 'appState', sessionId: 's1', termId: 't1', state: app() }));
+    expect(m.terms.k1).toMatchObject({ passthrough: 'off', autoPassthrough: false });
+  });
+
   it('用户手动切换后，不再被备用屏幕退出自动改回', () => {
     let m = withTerm('shell');
     m = run(m, core({ type: 'termState', sessionId: 's1', termId: 't1', state: modes({ altScreen: true }) }));

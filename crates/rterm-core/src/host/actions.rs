@@ -771,6 +771,10 @@ pub trait ActionTarget {
     fn modes(&self) -> TermModes;
     fn app(&self) -> AppSnapshot;
     async fn wait_quiet(&self, quiet: Duration, timeout: Duration);
+    /// 输出流当前的末尾偏移
+    fn output_mark(&self) -> u64;
+    /// 偏移 `from` 之后的输出
+    fn output_since(&self, from: u64) -> Vec<u8>;
     fn adapter_rule(&self) -> AdapterRule;
     /// 被控端是不是 Windows（决定路径引号写法）
     fn windows(&self) -> bool;
@@ -789,9 +793,13 @@ pub struct ActionOutcome {
 pub async fn write_plan<T: ActionTarget>(t: &T, plan: SubmitPlan) -> Result<(), ActionError> {
     let n = plan.chunks.len();
     for (i, c) in plan.chunks.into_iter().enumerate() {
+        let images = plan.image_waits.get(i).copied().unwrap_or(0);
+        let mark = t.output_mark();
         t.write(c).await?;
         let pause = plan.pauses.get(i).copied().unwrap_or_default();
-        if !pause.is_zero() {
+        if images > 0 {
+            wait_image_marks(t, mark, images, pause.max(plan.image_wait)).await;
+        } else if !pause.is_zero() {
             tokio::time::sleep(pause).await;
         } else if i + 1 < n {
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -802,6 +810,24 @@ pub async fn write_plan<T: ActionTarget>(t: &T, plan: SubmitPlan) -> Result<(), 
         t.write(enter).await?;
     }
     Ok(())
+}
+
+/// 等 `mark` 之后的输出里出现 `want` 个图片标记，最多等 `max`。
+/// Claude Code 读取图片是异步的，标记出现前回车，消息里就只有文字、图片随后才进输入框。
+async fn wait_image_marks<T: ActionTarget>(t: &T, mark: u64, want: usize, max: Duration) {
+    let deadline = tokio::time::Instant::now() + max;
+    loop {
+        if adapter::count_image_marks(&t.output_since(mark)) >= want {
+            // 标记出现后留一点时间让输入框把这一帧画完
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            return;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            tracing::debug!("等待图片标记超时（期望 {want} 个）");
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 /// 步骤解析后的形态：模板已经替换、按键已经解析，执行前先全部准备好，
@@ -1407,6 +1433,12 @@ mod tests {
             self.app.clone()
         }
         async fn wait_quiet(&self, _q: Duration, _t: Duration) {}
+        fn output_mark(&self) -> u64 {
+            0
+        }
+        fn output_since(&self, _from: u64) -> Vec<u8> {
+            Vec::new()
+        }
         fn adapter_rule(&self) -> AdapterRule {
             let mut r = adapter::AdapterRules::builtin().select(&adapter::MatchCtx {
                 profile: "CLAUDE",

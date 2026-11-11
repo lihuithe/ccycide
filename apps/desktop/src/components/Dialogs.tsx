@@ -209,7 +209,7 @@ export function SettingsDialog({ settings, onClose }: { settings: Settings; onCl
           >
             <option value="on_start">每次启动</option>
             <option value="after_session">每次会话结束后</option>
-            <option value="manual">仅手动</option>
+            <option value="manual">不过期（仅手动刷新）</option>
           </select>
         </Row>
         <Row label="终端隔离">

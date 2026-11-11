@@ -491,6 +491,12 @@ impl ActionTarget for TermTarget {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }
+    fn output_mark(&self) -> u64 {
+        self.0.lock().ring.end()
+    }
+    fn output_since(&self, from: u64) -> Vec<u8> {
+        self.0.lock().ring.read_from(from).1
+    }
     fn adapter_rule(&self) -> AdapterRule {
         let running_claude = self.0.lock().app.running;
         let profile = if self.0.profile == pb::Profile::Claude as i32 || running_claude {

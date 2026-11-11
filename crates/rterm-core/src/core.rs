@@ -68,6 +68,9 @@ pub const DEFAULT_API_URL: &str = match option_env!("RTERM_DEFAULT_API_URL") {
 /// 机密存储里固定密码派生值的条目名。
 pub const FIXED_PW_KEY: &str = "fixed-pw-key";
 
+/// 机密存储里临时密码的条目名。只有“仅手动刷新”策略下才保存，用于跨重启保持同一个密码。
+pub const TEMP_PW_KEY: &str = "temp-password";
+
 /// 需要确认的来访：同一台主控设备的上一个会话结束后这么久之内重连，不再重复确认
 /// （网络闪断后自动重连不应该让被控端用户再点一次）。
 pub const RECONNECT_GRACE: Duration = Duration::from_secs(120);
@@ -305,6 +308,29 @@ impl LocalStore {
             .secrets
             .get(FIXED_PW_KEY)?
             .and_then(|raw| <[u8; 32]>::try_from(raw.as_slice()).ok()))
+    }
+
+    /// 读取保存的临时密码（读取失败或不存在都返回 None，调用方用新生成的密码）。
+    pub fn load_temp_password(&self) -> Option<String> {
+        match self.secrets.get(TEMP_PW_KEY) {
+            Ok(Some(raw)) => String::from_utf8(raw).ok(),
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!("读取保存的临时密码失败：{e}");
+                None
+            }
+        }
+    }
+
+    /// 保存（Some）或删除（None）临时密码。失败只记日志：最坏情况是重启后换了新密码。
+    pub fn store_temp_password(&self, pw: Option<&str>) {
+        let r = match pw {
+            Some(p) => self.secrets.set(TEMP_PW_KEY, p.as_bytes()),
+            None => self.secrets.delete(TEMP_PW_KEY),
+        };
+        if let Err(e) = r {
+            tracing::warn!("保存临时密码失败：{e}");
+        }
     }
 
     pub fn store_fixed_key(&self, key: Option<[u8; 32]>) -> CoreResult<()> {
@@ -1322,6 +1348,24 @@ impl Inner {
         let guard = tokio::task::spawn_blocking(move || Guard::new(&code, access))
             .await
             .map_err(|e| BringUpError::Fatal(CoreError::new(codes::UNKNOWN, e.to_string())))?;
+        // “仅手动刷新”：恢复上次的临时密码，重启后不变（密码不过期）
+        if guard.settings().temp_password_policy == TempPolicy::Manual {
+            match self.store.load_temp_password() {
+                Some(saved) => {
+                    let g = guard.clone();
+                    let restored =
+                        tokio::task::spawn_blocking(move || g.restore_temp_password(&saved))
+                            .await
+                            .unwrap_or(false);
+                    if !restored {
+                        self.store.store_temp_password(Some(&guard.temp_password()));
+                    }
+                }
+                None => self.store.store_temp_password(Some(&guard.temp_password())),
+            }
+        } else {
+            self.store.store_temp_password(None);
+        }
         // 锁定状态持久化：重启后仍处于锁定（审查 L9）
         guard.attach_state_file(&self.store.paths.data_dir.join("guard-state.json"));
         let fixed = self.store.load_fixed_key_checked();
@@ -1696,6 +1740,17 @@ async fn signal_loop(inner: Arc<Inner>, rt: Arc<Runtime>, mut rx: mpsc::Receiver
     }
 }
 
+/// “仅手动刷新”时把当前临时密码存进机密存储，其他策略下删掉保存的副本。
+fn sync_saved_temp_password(inner: &Inner, rt: &Runtime) {
+    if rt.guard.settings().temp_password_policy == TempPolicy::Manual {
+        inner
+            .store
+            .store_temp_password(Some(&rt.guard.temp_password()));
+    } else {
+        inner.store.store_temp_password(None);
+    }
+}
+
 async fn guard_loop(inner: Arc<Inner>, rt: Arc<Runtime>) {
     let mut rx = rt.guard.subscribe();
     let mut stop = rt.stop.subscribe();
@@ -1706,9 +1761,11 @@ async fn guard_loop(inner: Arc<Inner>, rt: Arc<Runtime>) {
         };
         match ev {
             Ok(GuardEvent::TempPasswordChanged | GuardEvent::FixedPasswordChanged) => {
+                sync_saved_temp_password(&inner, &rt);
                 inner.emit_local_info().await;
             }
             Ok(GuardEvent::SettingsChanged) => {
+                sync_saved_temp_password(&inner, &rt);
                 let _ = rt.signal.presence_update(rt.guard.settings().enabled).await;
                 inner.emit_local_info().await;
             }

@@ -68,6 +68,10 @@ pub struct AdapterRule {
     pub attach_separate: bool,
     /// 单独粘贴路径之后等多久再写后面的内容（实测：0ms 时图片标记会被异步追加到末尾、顺序错乱，100ms 正常）
     pub attach_gap_ms: u64,
+    /// 粘贴图片路径后，最多等多久让 `[Image #n]` 标记出现在输出里。Claude Code 读取、缩放图片是异步的，
+    /// 大图要几百毫秒以上；固定等 `attach_gap_ms` 就回车，会出现"文字先发出去、图片后出现在输入框"。
+    /// 标记提前出现就提前继续；一直不出现（如系统 ConPTY 下只显示路径文本）则等满这个时间。
+    pub attach_wait_ms: u64,
 }
 
 impl Default for AdapterRule {
@@ -83,6 +87,7 @@ impl Default for AdapterRule {
             auto_passthrough_on_alt_screen: false,
             attach_separate: false,
             attach_gap_ms: 150,
+            attach_wait_ms: 3000,
         }
     }
 }
@@ -128,6 +133,7 @@ impl AdapterRules {
                     auto_passthrough_on_alt_screen: false,
                     attach_separate: true,
                     attach_gap_ms: 150,
+                    attach_wait_ms: 3000,
                 },
                 AdapterRule {
                     id: "generic".into(),
@@ -140,6 +146,7 @@ impl AdapterRules {
                     auto_passthrough_on_alt_screen: true,
                     attach_separate: false,
                     attach_gap_ms: 150,
+                    attach_wait_ms: 3000,
                 },
             ],
         }
@@ -164,6 +171,7 @@ impl AdapterRules {
             for (name, ms) in [
                 ("submit_delay_ms", r.submit_delay_ms),
                 ("attach_gap_ms", r.attach_gap_ms),
+                ("attach_wait_ms", r.attach_wait_ms),
             ] {
                 if ms > MAX_RULE_MS {
                     return Err(RulesError::Invalid(format!(
@@ -238,6 +246,9 @@ pub struct SubmitPlan {
     pub chunks: Vec<Vec<u8>>,
     /// 与 `chunks` 等长：写完对应片段之后额外等待的时间（附件路径单独粘贴后要等 Claude Code 异步识别）
     pub pauses: Vec<Duration>,
+    /// 与 `chunks` 等长：写完对应片段之后要等出现几个 `[Image #n]` 标记（0 = 不等），最多等 `image_wait`
+    pub image_waits: Vec<usize>,
+    pub image_wait: Duration,
     /// 最后一个片段之后、回车之前的等待
     pub delay_before_enter: Duration,
     /// 回车（`press_enter` 为假时为 None）
@@ -280,6 +291,52 @@ pub fn quote_path(path: &str, windows: bool) -> String {
     } else {
         format!("'{}'", path.replace('\'', r"'\''"))
     }
+}
+
+/// Claude Code 会把整段粘贴识别成图片的扩展名。
+pub fn is_image_path(path: &str) -> bool {
+    let ext = path.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
+    matches!(
+        ext.as_deref(),
+        Some("png" | "jpg" | "jpeg" | "gif" | "webp")
+    )
+}
+
+/// 终端输出里出现了几次 `[Image #`（先去掉 ANSI 控制序列，免得颜色、光标序列把它拆开）。
+pub fn count_image_marks(out: &[u8]) -> usize {
+    const NEEDLE: &[u8] = b"[Image #";
+    let mut text = Vec::with_capacity(out.len());
+    let mut i = 0;
+    while i < out.len() {
+        if out[i] != 0x1b {
+            text.push(out[i]);
+            i += 1;
+            continue;
+        }
+        match out.get(i + 1) {
+            // CSI：到 0x40..=0x7E 的结束字节为止
+            Some(b'[') => {
+                i += 2;
+                while i < out.len() && !(0x40..=0x7e).contains(&out[i]) {
+                    i += 1;
+                }
+                i += 1;
+            }
+            // OSC：到 BEL 或 ESC \ 为止
+            Some(b']') => {
+                i += 2;
+                while i < out.len()
+                    && out[i] != 0x07
+                    && !(out[i] == 0x1b && out.get(i + 1) == Some(&b'\\'))
+                {
+                    i += 1;
+                }
+                i += if out.get(i) == Some(&0x07) { 1 } else { 2 };
+            }
+            _ => i += 2,
+        }
+    }
+    text.windows(NEEDLE.len()).filter(|w| *w == NEEDLE).count()
 }
 
 /// 把第 n 个占位符换成第 n 个附件路径；多出来的路径用空格追加到末尾；多出来的占位符删掉。
@@ -362,6 +419,8 @@ pub fn build_submit(
     let chunks = split_utf8(body.as_bytes(), WRITE_CHUNK);
     SubmitPlan {
         pauses: vec![Duration::ZERO; chunks.len()],
+        image_waits: vec![0; chunks.len()],
+        image_wait: Duration::ZERO,
         chunks,
         delay_before_enter: Duration::from_millis(rule.submit_delay_ms),
         enter: press_enter.then(|| rule.submit_key.clone().into_bytes()),
@@ -380,17 +439,17 @@ fn build_segmented(
     press_enter: bool,
     windows: bool,
 ) -> SubmitPlan {
-    // (内容, 是不是路径)
-    let mut segs: Vec<(String, bool)> = Vec::new();
+    // (内容, 是不是路径, 其中图片的个数)
+    let mut segs: Vec<(String, bool, usize)> = Vec::new();
     let mut cur = String::new();
     let mut idx = 0;
     for c in text.chars() {
         if c == PLACEHOLDER {
             if !cur.is_empty() {
-                segs.push((std::mem::take(&mut cur), false));
+                segs.push((std::mem::take(&mut cur), false, 0));
             }
             if let Some(p) = paths.get(idx) {
-                segs.push((quote_path(p, windows), true));
+                segs.push((quote_path(p, windows), true, usize::from(is_image_path(p))));
             }
             idx += 1;
         } else {
@@ -398,51 +457,55 @@ fn build_segmented(
         }
     }
     if !cur.is_empty() {
-        segs.push((cur, false));
+        segs.push((cur, false, 0));
     }
     // 没有对应占位符的附件追加到末尾，合并成一次粘贴（空格分隔）
-    let extras: Vec<String> = paths
-        .iter()
-        .skip(idx)
-        .map(|p| quote_path(p, windows))
-        .collect();
+    let extras = &paths[idx.min(paths.len())..];
     if !extras.is_empty() {
-        if let Some((last, false)) = segs.last_mut() {
+        if let Some((last, false, _)) = segs.last_mut() {
             if !last.ends_with(char::is_whitespace) {
                 last.push(' ');
             }
         }
-        segs.push((extras.join(" "), true));
+        let joined: Vec<String> = extras.iter().map(|p| quote_path(p, windows)).collect();
+        let images = extras.iter().filter(|p| is_image_path(p)).count();
+        segs.push((joined.join(" "), true, images));
     }
     // 相邻的路径合并成一次粘贴，用空格分隔（实测两个路径一次粘贴会得到两个图片标记）
-    let mut merged: Vec<(String, bool)> = Vec::new();
-    for (s, is_path) in segs {
+    let mut merged: Vec<(String, bool, usize)> = Vec::new();
+    for (s, is_path, images) in segs {
         match merged.last_mut() {
-            Some((prev, true)) if is_path => {
+            Some((prev, true, prev_images)) if is_path => {
                 prev.push(' ');
                 prev.push_str(&s);
+                *prev_images += images;
             }
-            _ => merged.push((s, is_path)),
+            _ => merged.push((s, is_path, images)),
         }
     }
     let gap = Duration::from_millis(rule.attach_gap_ms);
     let mut chunks = Vec::new();
     let mut pauses = Vec::new();
-    for (s, is_path) in &merged {
+    let mut image_waits = Vec::new();
+    for (s, is_path, images) in &merged {
         let parts = split_utf8(bracket(s, &rule.newline_in_paste).as_bytes(), WRITE_CHUNK);
         let n = parts.len();
         for (i, p) in parts.into_iter().enumerate() {
+            let last = i + 1 == n;
             chunks.push(p);
-            pauses.push(if i + 1 == n && *is_path {
+            pauses.push(if last && *is_path {
                 gap
             } else {
                 Duration::ZERO
             });
+            image_waits.push(if last { *images } else { 0 });
         }
     }
     SubmitPlan {
         chunks,
         pauses,
+        image_waits,
+        image_wait: Duration::from_millis(rule.attach_wait_ms),
         delay_before_enter: Duration::from_millis(rule.submit_delay_ms),
         enter: press_enter.then(|| rule.submit_key.clone().into_bytes()),
     }
@@ -604,7 +667,37 @@ mod tests {
             p.pauses,
             vec![Duration::ZERO, gap, Duration::ZERO, gap, Duration::ZERO]
         );
+        assert_eq!(p.image_waits, vec![0, 1, 0, 1, 0]);
+        assert_eq!(p.image_wait, Duration::from_millis(3000));
         assert_eq!(p.enter.as_deref(), Some(&b"\r"[..]));
+    }
+
+    #[test]
+    fn image_waits_count_only_images() {
+        let m = TermModes::default();
+        let paths = vec![
+            "/a/1.PNG".to_string(),
+            "/a/notes.txt".to_string(),
+            "/a/2.webp".to_string(),
+        ];
+        let p = build_submit(&claude(), &m, "look", &paths, true, false);
+        assert_eq!(p.image_waits, vec![0, 2]);
+        // 通用规则不单独粘贴，也不等
+        let p = build_submit(&generic(), &m, "look", &paths, true, false);
+        assert!(p.image_waits.iter().all(|n| *n == 0));
+    }
+
+    #[test]
+    fn image_marks_survive_ansi() {
+        assert_eq!(count_image_marks(b"> look [Image #1] "), 1);
+        assert_eq!(
+            count_image_marks(
+                b"\x1b[2K\x1b[1G> \x1b[38;2;1;2;3m[Image #1]\x1b[39m \x1b[7m \x1b[27m[Image #2]"
+            ),
+            2
+        );
+        assert_eq!(count_image_marks(b"\x1b]0;[Image #9]\x07plain"), 0);
+        assert_eq!(count_image_marks(b"/a/1.png"), 0);
     }
 
     #[test]

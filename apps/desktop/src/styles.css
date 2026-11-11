@@ -467,6 +467,9 @@ select.input {
 /* ——— 标签页 ——— */
 .tabbar {
   flex: none;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
   background: var(--bg);
   border-bottom: 1px solid var(--border);
   padding: 6px 8px 0;
@@ -475,6 +478,7 @@ select.input {
   display: flex;
   align-items: flex-end;
   gap: 2px;
+  min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -957,6 +961,47 @@ select.input {
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--accent) 7%, var(--panel));
   font-size: 12px;
+}
+/* 操作区折叠后：一条细横条，不占地方 */
+.pass-bar.collapsed {
+  margin: 4px 10px 6px;
+  padding: 3px 6px 3px 10px;
+  border-style: solid;
+  border-color: var(--border);
+  background: var(--panel);
+  color: var(--muted);
+}
+.pass-bar.collapsed .btn {
+  gap: 4px;
+}
+/* 操作区上方的折叠把手：贴着输入框右上角的小按钮 */
+.ops-handle {
+  flex: none;
+  display: flex;
+  justify-content: flex-end;
+  height: 0;
+  position: relative;
+  z-index: 2;
+}
+.ops-handle-btn {
+  position: absolute;
+  right: 14px;
+  top: -10px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0.7;
+}
+.ops-handle-btn:hover {
+  opacity: 1;
+  color: var(--fg);
 }
 .pass-dot {
   width: 8px;

@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useController } from '../app/hooks';
 import type { AppModel } from '../state/store';
 import { isBlocked } from '../lib/termErrors';
+import { notReadyHint } from '../lib/session';
 import { Icon, Popover } from './common';
 
 export function TabBar({ model, onNewClaude }: { model: AppModel; onNewClaude: () => void }) {
@@ -56,43 +57,52 @@ export function TabBar({ model, onNewClaude }: { model: AppModel; onNewClaude: (
             </div>
           );
         })}
-        <div className="menu-anchor">
-          <button type="button" className="icon-btn" title="新建 (Ctrl+Shift+T)" disabled={!canNew} onClick={() => setMenu((m) => !m)}>
-            <Icon name="plus" />
-          </button>
-          {menu && session && (
-            <Popover onClose={() => setMenu(false)} className="new-menu">
-              {(shells.length > 0 ? shells : [{ id: '', name: '终端', path: '', isDefault: true }]).map((sh) => (
-                <button
-                  key={sh.id}
-                  type="button"
-                  className="menu-item"
-                  onClick={() => {
-                    setMenu(false);
-                    c.newTerm(session.id, 'shell', { shellId: sh.id });
-                  }}
-                >
-                  <Icon name="terminal" size={14} />
-                  <span>{sh.name}</span>
-                </button>
-              ))}
-              <div className="menu-sep" />
+      </div>
+      {/* 放在 .tabs 外面：.tabs 横向可滚动，会把下拉菜单裁掉 */}
+      <div className="menu-anchor">
+        <button
+          type="button"
+          className="icon-btn"
+          title="新建 (Ctrl+Shift+T)"
+          disabled={!session}
+          // 菜单打开时，别让这次按下被当成"点到菜单外面"先关掉、紧接着又被 click 打开
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={() => (canNew ? setMenu((m) => !m) : c.toast(notReadyHint(session?.phase), 'error'))}
+        >
+          <Icon name="plus" />
+        </button>
+        {menu && session && (
+          <Popover onClose={() => setMenu(false)} className="new-menu">
+            {(shells.length > 0 ? shells : [{ id: '', name: '终端', path: '', isDefault: true }]).map((sh) => (
               <button
+                key={sh.id}
                 type="button"
                 className="menu-item"
-                disabled={!claudeOk}
-                title={claudeOk ? undefined : '对方未安装 Claude Code'}
                 onClick={() => {
                   setMenu(false);
-                  onNewClaude();
+                  c.newTerm(session.id, 'shell', { shellId: sh.id });
                 }}
               >
-                <Icon name="sparkle" size={14} />
-                <span>Claude Code{claudeOk ? '…' : '（未安装）'}</span>
+                <Icon name="terminal" size={14} />
+                <span>{sh.name}</span>
               </button>
-            </Popover>
-          )}
-        </div>
+            ))}
+            <div className="menu-sep" />
+            <button
+              type="button"
+              className="menu-item"
+              disabled={!claudeOk}
+              title={claudeOk ? undefined : '对方未安装 Claude Code'}
+              onClick={() => {
+                setMenu(false);
+                onNewClaude();
+              }}
+            >
+              <Icon name="sparkle" size={14} />
+              <span>Claude Code{claudeOk ? '…' : '（未安装）'}</span>
+            </button>
+          </Popover>
+        )}
       </div>
     </div>
   );

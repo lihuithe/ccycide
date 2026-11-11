@@ -350,6 +350,13 @@ export class Controller {
 
   /** 连接；失败抛出 CommandError。成功后自动附着对端已有的终端 */
   async connect(deviceCode: string, password: string, requestId: string): Promise<SessionId> {
+    // 已经连着（或正在重连）这台设备：切过去，不再建第二条会话（第二条会把第一条的终端抢走）
+    const norm = (s: string) => s.replace(/[\s-]/g, '');
+    const existing = Object.values(this.store.getState().sessions).find((s) => s.phase !== 'closed' && norm(s.deviceCode) === norm(deviceCode));
+    if (existing) {
+      this.store.dispatch({ type: 'activateSession', id: existing.id });
+      throw { code: 'ALREADY_CONNECTED', message: '已经连着这台设备，无需重复连接' } satisfies CommandError;
+    }
     this.store.dispatch({ type: 'connectPhase', requestId, phase: 'connecting' });
     let id: SessionId;
     try {
