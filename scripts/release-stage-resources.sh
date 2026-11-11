@@ -62,7 +62,8 @@ EXE=""
 case "$TARGET" in *windows*) EXE=".exe" ;; esac
 SIDECAR="$BIN_DIR/rterm-cli-${TARGET}${EXE}"
 
-sha256_of() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
+# 从标准输入算哈希：Windows 路径含反斜杠时，sha256sum 会在输出的哈希前加 "\"，导致比对失败
+sha256_of() { if command -v sha256sum >/dev/null 2>&1; then sha256sum < "$1" | cut -d' ' -f1; else shasum -a 256 < "$1" | cut -d' ' -f1; fi; }
 PY="$(command -v python3 || command -v python || true)"
 
 # ---------- 1. rterm-cli 外部二进制 ----------
@@ -102,7 +103,7 @@ case "$TARGET" in
     case "$TARGET" in
       x86_64-*) ARCH_DIR=x64; RID=win-x64 ;;
       aarch64-*) ARCH_DIR=arm64; RID=win-arm64 ;;
-      *) die "不支持的 Windows 目标 $TARGET（只做 x64 和 ARM64）" ;;
+      *) die "不支持的 Windows 目标 ${TARGET}（只做 x64 和 ARM64）" ;;
     esac
     mkdir -p "$CONPTY_DIR"
     if [ "$STUB" = 1 ]; then
@@ -138,4 +139,4 @@ PYEOF
     ;;
 esac
 
-echo "完成（target=$TARGET）"
+echo "完成（target=${TARGET}）"

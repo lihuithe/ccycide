@@ -45,7 +45,7 @@ SEMVER='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
 NEW="${NEW#v}"
 EXPECT="${EXPECT#v}"
 if [ "$MODE" = set ]; then
-  [[ "$NEW" =~ $SEMVER ]] || die "--set 需要形如 1.2.3 或 1.2.3-beta.1 的版本号，收到「$NEW」"
+  [[ "$NEW" =~ $SEMVER ]] || die "--set 需要形如 1.2.3 或 1.2.3-beta.1 的版本号，收到「${NEW}」"
 fi
 if [ -n "$EXPECT" ]; then
   [[ "$EXPECT" =~ $SEMVER ]] || die "--expect 不是合法版本号：$EXPECT"

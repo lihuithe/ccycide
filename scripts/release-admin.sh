@@ -54,7 +54,7 @@ api() {
 
 # 要求 2xx，否则退出并打印响应
 expect_ok() {
-  case "$HTTP_CODE" in 2*) ;; *) echo "请求失败 HTTP $HTTP_CODE：$HTTP_BODY" >&2; exit 1 ;; esac
+  case "$HTTP_CODE" in 2*) ;; *) echo "请求失败 HTTP ${HTTP_CODE}：$HTTP_BODY" >&2; exit 1 ;; esac
 }
 
 # ---------- 子命令 ----------
@@ -132,7 +132,7 @@ JS
     api POST /releases "$line"
     case "$HTTP_CODE" in
       2*) echo "已登记  $label" ;;
-      409) echo "已存在  $label（跳过）" ;;
+      409) echo "已存在  ${label}（跳过）" ;;
       *) echo "失败    $label  HTTP $HTTP_CODE $HTTP_BODY" >&2; fail=$((fail + 1)) ;;
     esac
   done <<< "$bodies"
@@ -190,5 +190,5 @@ case "$sub" in
     api DELETE /config/min_app_version; expect_ok
     echo "已删除下发的 min_app_version，恢复为服务端环境变量里的默认值" ;;
   ''|-h|--help) sed -n '2,26p' "$0" ;;
-  *) die "未知子命令 $sub（-h 查看帮助）" ;;
+  *) die "未知子命令 ${sub}（-h 查看帮助）" ;;
 esac

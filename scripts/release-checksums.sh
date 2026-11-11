@@ -21,4 +21,4 @@ done > "$tmp"
 
 [ -s "$tmp" ] || { echo "错误：$DIR 里没有可计算的文件" >&2; rm -f "$tmp"; exit 1; }
 mv "$tmp" "$OUT"
-echo "已生成 $DIR/$OUT（$(wc -l < "$OUT") 个文件）"
+echo "已生成 $DIR/${OUT}（$(wc -l < "$OUT") 个文件）"

@@ -57,7 +57,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::tag「$TAG」不是 vMAJOR.MINOR.PATCH[-预发布标识] 格式"
+            echo "::error::tag「${TAG}」不是 vMAJOR.MINOR.PATCH[-预发布标识] 格式"
             exit 1
           fi
           version="${TAG#v}"
