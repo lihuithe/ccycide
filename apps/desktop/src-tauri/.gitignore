@@ -1,0 +1,5 @@
+/gen/
+/target/
+# 由 scripts/desktop-prepare.ps1 / .sh 生成
+/binaries/
+/resources/
