@@ -1,0 +1,41 @@
+cwd {REPO}\tools\scratch\s2
+spawn {CLAUDE_EXE}
+wait 4500
+echo === V13 Shift+Tab (ESC[Z) x4 ===
+send \e[Z
+wait 700
+screen shifttab1
+send \e[Z
+wait 700
+screen shifttab2
+send \e[Z
+wait 700
+screen shifttab3
+send \e[Z
+wait 700
+screen shifttab4
+echo === Alt+M (ESC m) ===
+send \em
+wait 700
+screen altm
+echo === Alt+T (ESC t) ===
+send \et
+wait 700
+screen altt
+echo === Ctrl+O (0x0f) ===
+send \x0f
+wait 900
+screen ctrlo
+send \x0f
+wait 600
+echo === Alt+P (ESC p) ===
+send \ep
+wait 900
+screen altp
+send \e
+wait 600
+screen after-esc
+paste /exit
+wait 100
+send \r
+waitexit 8000

@@ -1,0 +1,27 @@
+cwd {REPO}\tools\scratch\s2
+spawn {CLAUDE_EXE}
+wait 4500
+echo === multi-line paste with CR newlines ===
+paste 第一行\r第二行 abc\r第三行 `code` "q" \ end
+wait 500
+screen cr
+echo === clear with ctrl+u / esc esc ===
+send \x15
+wait 300
+screen after-ctrl-u
+echo === multi-line paste with LF newlines ===
+paste line-A\nline-B\nline-C
+wait 500
+screen lf
+send \x15
+wait 300
+screen after-clear2
+echo === typed backslash-enter ===
+send first\\rsecond
+wait 500
+screen bs-enter
+send \x15
+paste /exit
+wait 100
+send \r
+waitexit 8000

@@ -1,0 +1,31 @@
+cwd {REPO}\tools\scratch\s2
+spawn {CLAUDE_EXE}
+wait 4500
+echo === separate pastes, gap 0ms (no waits at all between writes) ===
+paste what\sis\sin\s
+paste "{REPO}\x5ctools\x5cscratch\x5cimg\x5ca\sb\x5c中文\s图.png"
+paste \sand\s
+paste "{REPO}\x5ctools\x5cscratch\x5cimg\x5cpic.png"
+paste \sthanks
+wait 1500
+screentail 3 gap0
+send \x15
+wait 400
+echo === gap 100ms ===
+paste what\sis\sin\s
+wait 100
+paste "{REPO}\x5ctools\x5cscratch\x5cimg\x5ca\sb\x5c中文\s图.png"
+wait 100
+paste \sand\s
+wait 100
+paste "{REPO}\x5ctools\x5cscratch\x5cimg\x5cpic.png"
+wait 100
+paste \sthanks
+wait 1500
+screentail 3 gap100
+send \x15
+wait 300
+paste /exit
+wait 100
+send \r
+waitexit 8000

@@ -1,0 +1,10 @@
+echo sideloaded conpty, NO replies to DSR/DA1 from the host
+noreply
+spawn cmd.exe
+wait 2500
+rawshow 200
+send echo\sNOREPLY_OK\r
+wait 800
+screen after
+send exit\r
+waitexit 5000

@@ -1,0 +1,8 @@
+cwd {REPO}\tools\scratch\s2
+spawn {CLAUDE_EXE}
+wait 6000
+screen before-exit
+paste /exit
+wait 100
+send \r
+waitexit 8000

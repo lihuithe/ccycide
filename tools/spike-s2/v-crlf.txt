@@ -1,0 +1,21 @@
+cwd {REPO}\tools\scratch\s2
+spawn {CLAUDE_EXE}
+wait 4500
+echo === CR inside bracketed paste: /context CR /context  (both are local commands, no model call) ===
+mark
+paste /context\r/context
+wait 3000
+rawhas Context Usage
+screen cr-paste
+echo === LF inside bracketed paste ===
+send \x15
+wait 300
+paste /doctor\n/doctor
+wait 1000
+screen lf-paste
+send \x15
+send \x15
+paste /exit
+wait 100
+send \r
+waitexit 8000

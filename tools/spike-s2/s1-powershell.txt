@@ -1,0 +1,8 @@
+echo S1: powershell.exe (Win10 19044, system ConPTY)
+spawn powershell.exe -NoLogo
+wait 2500
+send echo\sRTERM_PS_OK\r
+wait 800
+screen after-echo
+send exit\r
+waitexit 8000

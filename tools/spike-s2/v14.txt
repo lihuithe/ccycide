@@ -1,0 +1,11 @@
+echo V14/V19: user hook (project settings) + our plugin hook both fire? and which shell runs commands?
+cwd {REPO}\tools\scratch\s2b
+bridge {REPO}\tools\scratch\bridge-data {REPO}\target-host\debug\hookprobe.exe nostatusline
+spawn {CLAUDE_EXE} --plugin-dir {REPO_FS}/tools/scratch/bridge-data/claude-plugin
+wait 5000
+screentail 4 user-statusline-shell-probe
+msgnames
+paste /exit
+wait 100
+send \r
+waitexit 8000

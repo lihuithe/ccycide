@@ -1,0 +1,12 @@
+[package]
+name = "spike-s2"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+rterm-core = { path = "../../crates/rterm-core" }
+tokio = { version = "1", features = ["full"] }
+vt100 = "0.15"
+anyhow = "1"

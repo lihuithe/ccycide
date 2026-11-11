@@ -1,0 +1,12 @@
+echo V19: plugin dir and hook exe under paths WITH SPACES (--plugin-dir/--settings args passed through CreateProcess quoting)
+cwd {REPO}\tools\scratch\s2
+bridge {REPO}\tools\scratch\sp%20ace\data%20dir {REPO}\tools\scratch\sp%20ace\hook%20dir\hookprobe.exe
+spawn {CLAUDE_EXE} --plugin-dir {REPO_FS}/tools/scratch/sp\sace/data\sdir/claude-plugin --settings {REPO_FS}/tools/scratch/sp\sace/data\sdir/claude-plugin/statusline-settings.json
+wait 5000
+msgnames
+paste /exit
+wait 100
+send \r
+waitexit 8000
+wait 1000
+msgnames

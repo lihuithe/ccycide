@@ -1,0 +1,14 @@
+cwd {REPO}\tools\scratch\s2
+spawn {CLAUDE_EXE}
+wait 5000
+mark
+paste /context
+wait 80
+screen after-paste-before-enter
+send \r
+wait 3000
+screen after-enter
+paste /exit
+wait 100
+send \r
+waitexit 8000

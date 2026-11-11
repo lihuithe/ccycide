@@ -1,0 +1,23 @@
+cwd {REPO}\tools\scratch\s2
+spawn {CLAUDE_EXE}
+wait 4500
+echo === S3 image path as proper bracketed paste ===
+paste {REPO}\x5ctools\x5cscratch\x5cimg\x5cpic.png
+wait 1500
+screentail 4 bare-path
+send \x15
+wait 400
+paste "{REPO}\x5ctools\x5cscratch\x5cimg\x5cmy\sdir\x5cpic2.png"
+wait 1500
+screentail 4 quoted-space-path
+send \x15
+wait 400
+paste "{REPO}\x5ctools\x5cscratch\x5cimg\x5c中文目录\x5c图片.png"
+wait 1500
+screentail 4 quoted-cjk-path
+send \x15
+wait 300
+paste /exit
+wait 100
+send \r
+waitexit 8000

@@ -1,0 +1,17 @@
+cwd {REPO}\tools\scratch\s2
+bridge {REPO}\tools\scratch\bridge-data {REPO}\target-host\debug\hookprobe.exe
+spawn {CLAUDE_EXE} --plugin-dir {REPO_FS}/tools/scratch/bridge-data/claude-plugin --settings {REPO_FS}/tools/scratch/bridge-data/claude-plugin/statusline-settings.json
+wait 6000
+msgnames
+screentail 6 startup
+paste /context
+wait 80
+send \r
+wait 3000
+msgnames
+paste /exit
+wait 100
+send \r
+waitexit 8000
+wait 1500
+msgnames

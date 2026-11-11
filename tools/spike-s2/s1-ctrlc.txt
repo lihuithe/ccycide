@@ -1,0 +1,12 @@
+echo S1: Ctrl+C reaches the program inside the PTY, not the host
+spawn cmd.exe
+wait 1000
+send ping\s-t\s127.0.0.1\r
+wait 2500
+send \x03
+wait 1500
+send echo\sAFTER_CTRL_C\r
+wait 1000
+screentail 8 ctrlc
+send exit\r
+waitexit 5000

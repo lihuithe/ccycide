@@ -1,0 +1,44 @@
+cwd {REPO}\tools\scratch\s2
+spawn {CLAUDE_EXE}
+wait 4500
+echo === (a) typed backslash + CR continuation ===
+send first\x5c\x0dsecond
+wait 600
+screen bs-continuation
+send \x15
+send \x15
+wait 300
+echo === (c1) paste bare path, no spaces ===
+paste {REPO}\x5ctools\x5cscratch\x5cimg\x5cpic.png
+wait 1200
+screen path-bare
+send \x15
+wait 400
+echo === (c2) paste double-quoted path with space ===
+paste "{REPO}\x5ctools\x5cscratch\x5cimg\x5cmy\sdir\x5cpic2.png"
+wait 1200
+screen path-quoted-space
+send \x15
+wait 400
+echo === (c3) paste bare path with space (unquoted) ===
+paste {REPO}\x5ctools\x5cscratch\x5cimg\x5cmy\sdir\x5cpic2.png
+wait 1200
+screen path-unquoted-space
+send \x15
+wait 400
+echo === (c4) paste single-quoted path with space ===
+paste '{REPO}\x5ctools\x5cscratch\x5cimg\x5cmy\sdir\x5cpic2.png'
+wait 1200
+screen path-single-quoted
+send \x15
+wait 400
+echo === (c5) paste text + path in the middle ===
+paste describe\sthis:\s"{REPO}\x5ctools\x5cscratch\x5cimg\x5ca\sb\x5c中文\s图.png"\sthanks
+wait 1200
+screen text-with-path
+send \x15
+wait 300
+paste /exit
+wait 100
+send \r
+waitexit 8000

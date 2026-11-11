@@ -1,0 +1,29 @@
+cwd {REPO}\tools\scratch\s2
+spawn {CLAUDE_EXE}
+wait 4500
+echo === (1) path embedded inside one larger paste ===
+paste what\sis\sin\s"{REPO}\x5ctools\x5cscratch\x5cimg\x5ca\sb\x5c中文\s图.png"\sthanks
+wait 1500
+screentail 3 embedded
+send \x15
+wait 400
+echo === (2) separate pastes: text, path alone, text ===
+paste what\sis\sin\s
+wait 300
+paste "{REPO}\x5ctools\x5cscratch\x5cimg\x5ca\sb\x5c中文\s图.png"
+wait 1000
+paste \sthanks
+wait 1000
+screentail 3 separate
+send \x15
+wait 400
+echo === (3) two images in one paste, space separated ===
+paste "{REPO}\x5ctools\x5cscratch\x5cimg\x5cpic.png"\s"{REPO}\x5ctools\x5cscratch\x5cimg\x5cmy\sdir\x5cpic2.png"
+wait 1500
+screentail 3 two-in-one
+send \x15
+wait 300
+paste /exit
+wait 100
+send \r
+waitexit 8000

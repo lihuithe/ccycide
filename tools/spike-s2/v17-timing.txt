@@ -1,0 +1,6 @@
+bridge {REPO}\tools\scratch\bridge-data {REPO}\target-host\debug\hookprobe.exe
+size 200 30
+spawn powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File {REPO_FS}/tools/spike-s2/v17.ps1
+wait 5000
+screentail 3 v17
+msgcount

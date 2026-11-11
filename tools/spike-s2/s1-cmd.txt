@@ -1,0 +1,7 @@
+echo S1: cmd.exe
+spawn cmd.exe
+wait 800
+send echo\sRTERM_CMD_OK\r
+wait 500
+send exit\r
+waitexit 8000

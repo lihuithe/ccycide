@@ -1,0 +1,29 @@
+echo V15: user's own statusLine (project .claude/settings.json). Baseline, then with our --settings, then with chaining via RTERM_USER_STATUSLINE
+cwd {REPO}\tools\scratch\s2b
+spawn {CLAUDE_EXE}
+wait 5000
+screentail 4 baseline-user-statusline
+paste /exit
+wait 100
+send \r
+waitexit 8000
+echo ----- with --settings (ours), no chaining
+bridge {REPO}\tools\scratch\bridge-data {REPO}\target-host\debug\hookprobe.exe
+spawn {CLAUDE_EXE} --settings {REPO_FS}/tools/scratch/bridge-data/claude-plugin/statusline-settings.json
+wait 5000
+screentail 4 ours-no-chain
+msgnames
+paste /exit
+wait 100
+send \r
+waitexit 8000
+echo ----- with --settings (ours) and RTERM_USER_STATUSLINE chaining
+env RTERM_USER_STATUSLINE=echo USERBAR_FROM_PROJECT
+spawn {CLAUDE_EXE} --settings {REPO_FS}/tools/scratch/bridge-data/claude-plugin/statusline-settings.json
+wait 5000
+screentail 4 ours-chained
+msgnames
+paste /exit
+wait 100
+send \r
+waitexit 8000

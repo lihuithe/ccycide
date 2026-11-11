@@ -1,0 +1,8 @@
+echo S2: start claude directly in ConPTY (system), observe 2004h
+cwd {REPO}\tools\scratch\s2
+spawn {CLAUDE_EXE}
+wait 6000
+screen startup
+rawhas \e[?2004h
+rawshow 600
+dump {REPO}\tools\scratch\s2-start.raw

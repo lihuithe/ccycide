@@ -1,0 +1,9 @@
+echo S1 with sideloaded conpty.dll
+spawn cmd.exe
+wait 1200
+send tasklist\s/fi\s"imagename\seq\sOpenConsole.exe"\r
+wait 1500
+screen tasklist
+rawshow 300
+send exit\r
+waitexit 8000

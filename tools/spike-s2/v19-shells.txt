@@ -1,0 +1,16 @@
+echo V19/T39: type the generated launch command into PowerShell, with quoting (paths with spaces/Chinese, session name with space+Chinese)
+cwd {REPO}\tools\scratch\s2
+bridge {REPO}\tools\scratch\sp%20ace\data%20dir {REPO}\tools\scratch\sp%20ace\hook%20dir\hookprobe.exe
+spawn powershell.exe -NoLogo
+wait 2500
+send claude\s--model\s'sonnet'\s--permission-mode\splan\s--effort\shigh\s--name\s'我的\s任务'\s--plugin-dir\s'{REPO_FS}/tools/scratch/sp\sace/data\sdir/claude-plugin'\s--settings\s'{REPO_FS}/tools/scratch/sp\sace/data\sdir/claude-plugin/statusline-settings.json'\r
+wait 7000
+screentail 7 ps-launch
+msgnames
+paste /exit
+wait 100
+send \r
+wait 3000
+screentail 3 ps-after-exit
+send exit\r
+waitexit 5000

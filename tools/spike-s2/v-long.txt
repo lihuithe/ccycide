@@ -1,0 +1,20 @@
+cwd {REPO}\tools\scratch\s2
+spawn {CLAUDE_EXE}
+wait 4500
+echo === 5000 CJK chars in one bracketed paste (2KB chunks) ===
+pastefile {REPO_FS}/tools/spike-s2/long-cjk.txt
+wait 2000
+screentail 6 long-cjk
+send \x15
+wait 500
+echo === 20 lines with code, quotes, emoji (LF newlines) ===
+pastefile {REPO_FS}/tools/spike-s2/multi-line.txt
+wait 2000
+screentail 6 multi-line
+send \x15
+wait 300
+send \x15
+paste /exit
+wait 100
+send \r
+waitexit 8000

@@ -1,0 +1,13 @@
+cwd {REPO}\tools\scratch\s2
+spawn {CLAUDE_EXE}
+wait 4500
+paste /context
+wait 0
+send \r
+wait 2500
+echo RESULT v12 mode=paste delay=0
+has Context Usage
+paste /exit
+wait 100
+send \r
+waitexit 8000

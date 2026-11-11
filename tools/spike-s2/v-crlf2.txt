@@ -1,0 +1,19 @@
+cwd {REPO}\tools\scratch\s2
+spawn {CLAUDE_EXE}
+wait 4500
+echo === A: CR inside paste (two /context). if CR submits: first executed, second stays in input box
+paste /context\r/context
+wait 2500
+screentail 5 CR
+send \x15
+wait 300
+paste /doctor\n/doctor
+wait 1000
+echo === B: LF inside paste: expect two lines in input box, nothing executed
+screentail 6 LF
+send \x15
+send \x15
+paste /exit
+wait 100
+send \r
+waitexit 8000

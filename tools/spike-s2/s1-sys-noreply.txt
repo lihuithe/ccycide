@@ -1,0 +1,9 @@
+echo system conpty, NO replies (expected: hangs, S1 root cause)
+noreply
+spawn cmd.exe
+wait 3000
+rawshow 200
+send echo\sNOREPLY_OK\r
+wait 800
+screen after
+kill
