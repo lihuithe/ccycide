@@ -140,6 +140,10 @@ export class Controller {
         }
         break;
       }
+      case 'upgradeRequired':
+        this.toast(`当前版本过低（至少需要 ${e.minVersion || '新版本'}），请更新后使用`, 'error');
+        void this.checkUpdate(true); // 有可用更新时顶部出现更新条
+        break;
       case 'sessionState':
         if (e.requestId) break; // connect 进行中的状态，只用于连接按钮区
         if (e.state === 'closed' && e.reason) this.toast(`已断开：${e.reason}`, 'error');

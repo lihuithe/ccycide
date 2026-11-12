@@ -441,7 +441,9 @@ export type CoreEvent =
   /** 托盘菜单（暂停被控/断开全部）等 Rust 侧改动了设置 */
   | { type: 'settingsChanged'; settings: Settings }
   /** 临时密码自动刷新（锁定触发/会话结束后刷新）等 */
-  | { type: 'localInfoChanged'; info: LocalInfo };
+  | { type: 'localInfoChanged'; info: LocalInfo }
+  /** 本机版本低于服务端要求的最低版本 */
+  | { type: 'upgradeRequired'; minVersion: string; currentVersion: string; latestVersion?: string };
 
 export type CoreEventType = CoreEvent['type'];
 

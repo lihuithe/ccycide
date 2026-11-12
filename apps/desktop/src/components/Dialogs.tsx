@@ -230,9 +230,6 @@ export function SettingsDialog({ settings, onClose }: { settings: Settings; onCl
         <Row label="上下文用量与费用">
           <Switch checked={h.claudeStatusline} disabled={!h.claudeIntegration} onChange={(v) => update((s) => ((s.host.claudeStatusline = v), s))} />
         </Row>
-        <Row label="所有终端启用集成（修改 Claude Code 用户配置）">
-          <Switch checked={h.claudeIntegrationAll} disabled={!h.claudeIntegration} onChange={(v) => update((s) => ((s.host.claudeIntegrationAll = v), s))} />
-        </Row>
 
         <div className="settings-group">主控</div>
         <Row label="主题">
