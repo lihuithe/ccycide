@@ -279,9 +279,16 @@ export interface DeviceTraffic {
 
 export type TrafficDelta = Omit<DeviceTraffic, 'statDate'>;
 
+/** 某台设备在某一分钟的流量；minute 是该分钟起点的 Unix 秒（UTC，60 的整数倍） */
+export interface DeviceTrafficMinute extends Omit<DeviceTraffic, 'statDate'> {
+  minute: number;
+}
+
 export interface TrafficRepo {
-  /** 一次性累加多台设备的增量（单条语句，失败重试不会重复累加一部分） */
-  add(date: string, rows: TrafficDelta[]): Promise<void>;
+  /** 一次性累加多台设备的增量（单条语句，失败重试不会重复累加一部分）。minute 不为空时同时累加到分钟表 */
+  add(date: string, rows: TrafficDelta[], minute?: number): Promise<void>;
+  /** 分钟级流量，[from, to) 为 Unix 秒，按时间升序；没有流量的分钟没有行 */
+  rangeMinutes(q: { from: number; to: number; deviceId?: number; limit: number }): Promise<DeviceTrafficMinute[]>;
   range(q: { from: string; to: string; deviceId?: number; limit: number }): Promise<DeviceTraffic[]>;
 }
 

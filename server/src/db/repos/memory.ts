@@ -28,6 +28,7 @@ import {
   type StatsRepo,
   type DeviceTraffic,
   type TrafficDelta,
+  type DeviceTrafficMinute,
   type TrafficRepo,
 } from './types.js';
 
@@ -384,7 +385,29 @@ export class MemoryStatsRepo implements StatsRepo {
 export class MemoryTrafficRepo implements TrafficRepo {
   private map = new Map<string, DeviceTraffic>();
 
-  async add(date: string, rows: TrafficDelta[]): Promise<void> {
+  private minutes = new Map<string, DeviceTrafficMinute>();
+
+  async rangeMinutes(q: { from: number; to: number; deviceId?: number; limit: number }): Promise<DeviceTrafficMinute[]> {
+    return [...this.minutes.values()]
+      .filter((t) => t.minute >= q.from && t.minute < q.to && (q.deviceId === undefined || t.deviceId === q.deviceId))
+      .sort((a, b) => a.minute - b.minute || a.deviceId - b.deviceId)
+      .slice(0, q.limit)
+      .map((t) => ({ ...t }));
+  }
+
+  async add(date: string, rows: TrafficDelta[], minute?: number): Promise<void> {
+    if (minute !== undefined) {
+      const mt = Math.floor(minute / 60) * 60;
+      for (const r of rows) {
+        const k = `${r.deviceId}|${mt}`;
+        const t = this.minutes.get(k) ?? { deviceId: r.deviceId, minute: mt, bytesIn: 0, bytesOut: 0, framesIn: 0, framesOut: 0 };
+        t.bytesIn += r.bytesIn;
+        t.bytesOut += r.bytesOut;
+        t.framesIn += r.framesIn;
+        t.framesOut += r.framesOut;
+        this.minutes.set(k, t);
+      }
+    }
     for (const r of rows) {
       const k = `${r.deviceId}|${date}`;
       const t = this.map.get(k) ?? { deviceId: r.deviceId, statDate: date, bytesIn: 0, bytesOut: 0, framesIn: 0, framesOut: 0 };

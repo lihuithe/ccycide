@@ -36,7 +36,7 @@ d('MySQL：迁移与仓储层（knex）', () => {
   it('迁移建出全部表，再执行一次没有新迁移', async () => {
     const [rows] = await db.raw('show tables');
     const names = (rows as Array<Record<string, string>>).map((r) => Object.values(r)[0]);
-    for (const t of ['devices', 'sessions', 'security_events', 'bans', 'relay_nodes', 'app_releases', 'app_config', 'daily_stats', 'device_traffic', 'admin_users', 'admin_audit_logs']) {
+    for (const t of ['devices', 'sessions', 'security_events', 'bans', 'relay_nodes', 'app_releases', 'app_config', 'daily_stats', 'device_traffic', 'device_traffic_minute', 'admin_users', 'admin_audit_logs']) {
       expect(names).toContain(t);
     }
     const [batch, files] = await db.migrate.latest();
@@ -201,6 +201,21 @@ d('MySQL：迁移与仓储层（knex）', () => {
     ]);
     expect(await repos.traffic.range({ from: '2030-01-03', to: '2030-01-03', limit: 10 })).toHaveLength(2);
     await db('device_traffic').where({ stat_date: '2030-01-03' }).delete();
+
+    // 分钟表：同一分钟累加（时间戳取整到分钟），日表同时累加
+    const base = 1_900_000_020;
+    await db('device_traffic_minute').whereIn('device_id', [900003]).delete();
+    await repos.traffic.add('2030-01-04', [{ deviceId: 900003, bytesIn: 5_000_000_000, bytesOut: 1, framesIn: 1, framesOut: 1 }], base);
+    await repos.traffic.add('2030-01-04', [{ deviceId: 900003, bytesIn: 1, bytesOut: 1, framesIn: 1, framesOut: 1 }], base + 30);
+    await repos.traffic.add('2030-01-04', [{ deviceId: 900003, bytesIn: 1, bytesOut: 1, framesIn: 1, framesOut: 1 }], base + 60);
+    const mins = await repos.traffic.rangeMinutes({ from: base - 60, to: base + 600, deviceId: 900003, limit: 10 });
+    expect(mins).toEqual([
+      { deviceId: 900003, minute: Math.floor(base / 60) * 60, bytesIn: 5_000_000_001, bytesOut: 2, framesIn: 2, framesOut: 2 },
+      { deviceId: 900003, minute: Math.floor(base / 60) * 60 + 60, bytesIn: 1, bytesOut: 1, framesIn: 1, framesOut: 1 },
+    ]);
+    expect((await repos.traffic.range({ from: '2030-01-04', to: '2030-01-04', deviceId: 900003, limit: 10 }))[0]).toMatchObject({ bytesIn: 5_000_000_002, framesOut: 3 });
+    await db('device_traffic_minute').where({ device_id: 900003 }).delete();
+    await db('device_traffic').where({ stat_date: '2030-01-04' }).delete();
   });
 });
 

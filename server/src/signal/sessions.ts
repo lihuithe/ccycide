@@ -43,7 +43,7 @@ export async function applyRelayEvent(ctx: Ctx, ev: RelaySessionEvent): Promise<
     await ctx.repos.traffic.add(utcDate(new Date(ev.ts)), [
       { deviceId: s.controllerDeviceId, bytesIn: h2c.bytes, bytesOut: c2h.bytes, framesIn: h2c.frames, framesOut: c2h.frames },
       { deviceId: s.hostDeviceId, bytesIn: c2h.bytes, bytesOut: h2c.bytes, framesIn: c2h.frames, framesOut: h2c.frames },
-    ]);
+    ], Math.floor(ev.ts / 1000));
     return;
   }
   if (ev.type === 'paired') {

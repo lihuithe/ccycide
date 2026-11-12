@@ -29,6 +29,7 @@ import {
   type StatsRepo,
   type DeviceTraffic,
   type TrafficDelta,
+  type DeviceTrafficMinute,
   type TrafficRepo,
 } from './types.js';
 
@@ -541,21 +542,45 @@ export class KnexStatsRepo implements StatsRepo {
 export class KnexTrafficRepo implements TrafficRepo {
   constructor(private db: Knex) {}
 
-  async add(dateStr: string, rows: TrafficDelta[]): Promise<void> {
+  async add(dateStr: string, rows: TrafficDelta[], minute?: number): Promise<void> {
     if (rows.length === 0) return;
     const f = (n: number): number => Math.max(0, Math.floor(n));
     const values = rows.map(() => '(?, ?, ?, ?, ?, ?)').join(', ');
-    const params = rows.flatMap((r) => [r.deviceId, dateStr, f(r.bytesIn), f(r.bytesOut), f(r.framesIn), f(r.framesOut)]);
-    await this.db.raw(
-      `INSERT INTO device_traffic (device_id, stat_date, bytes_in, bytes_out, frames_in, frames_out)
-       VALUES ${values}
-       ON DUPLICATE KEY UPDATE
+    const upsert = `ON DUPLICATE KEY UPDATE
          bytes_in = bytes_in + VALUES(bytes_in),
          bytes_out = bytes_out + VALUES(bytes_out),
          frames_in = frames_in + VALUES(frames_in),
-         frames_out = frames_out + VALUES(frames_out)`,
-      params,
-    );
+         frames_out = frames_out + VALUES(frames_out)`;
+    const nums = (r: TrafficDelta): number[] => [f(r.bytesIn), f(r.bytesOut), f(r.framesIn), f(r.framesOut)];
+    const run = async (db: Knex | Knex.Transaction): Promise<void> => {
+      await db.raw(
+        `INSERT INTO device_traffic (device_id, stat_date, bytes_in, bytes_out, frames_in, frames_out) VALUES ${values} ${upsert}`,
+        rows.flatMap((r) => [r.deviceId, dateStr, ...nums(r)]),
+      );
+      if (minute !== undefined) {
+        await db.raw(
+          `INSERT INTO device_traffic_minute (device_id, minute_ts, bytes_in, bytes_out, frames_in, frames_out) VALUES ${values} ${upsert}`,
+          rows.flatMap((r) => [r.deviceId, Math.floor(minute / 60) * 60, ...nums(r)]),
+        );
+      }
+    };
+    // 日表和分钟表要么都记要么都不记：失败后事件会重试，不能只记一半
+    if (minute === undefined) await run(this.db);
+    else await this.db.transaction(run);
+  }
+
+  async rangeMinutes(q: { from: number; to: number; deviceId?: number; limit: number }): Promise<DeviceTrafficMinute[]> {
+    const qb = this.db('device_traffic_minute').where('minute_ts', '>=', q.from).andWhere('minute_ts', '<', q.to);
+    if (q.deviceId !== undefined) qb.andWhere('device_id', q.deviceId);
+    const rows = await qb.orderBy('minute_ts').orderBy('device_id').limit(q.limit);
+    return rows.map((r: Row) => ({
+      deviceId: num(r.device_id),
+      minute: num(r.minute_ts),
+      bytesIn: num(r.bytes_in),
+      bytesOut: num(r.bytes_out),
+      framesIn: num(r.frames_in),
+      framesOut: num(r.frames_out),
+    }));
   }
 
   async range(q: { from: string; to: string; deviceId?: number; limit: number }): Promise<DeviceTraffic[]> {

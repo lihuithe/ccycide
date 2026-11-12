@@ -236,6 +236,34 @@ export function adminRoutes(app: FastifyInstance, ctx: Ctx, signal: SignalContro
       // ----- 设备流量（按天）：in = 设备收到的，out = 设备发出的 -----
       admin.get<{ Querystring: Body }>('/traffic', async (req, reply) => {
         const q = req.query;
+        if (q.granularity !== undefined && q.granularity !== 'day' && q.granularity !== 'minute') return bad(reply, 'granularity 只能是 day 或 minute');
+        if (q.granularity === 'minute') {
+          // 分钟级：from/to 是 ISO 时间（如 2026-11-12T04:00:00Z），默认最近 60 分钟；没有流量的分钟没有行
+          const ms = (v: unknown): number => (typeof v === 'string' ? Date.parse(v) : NaN);
+          if ((q.from !== undefined && !Number.isFinite(ms(q.from))) || (q.to !== undefined && !Number.isFinite(ms(q.to)))) return bad(reply, 'from/to 格式应为 ISO 时间，如 2026-11-12T04:00:00Z');
+          const toMs = q.to !== undefined ? ms(q.to) : Date.now();
+          const fromMs = q.from !== undefined ? ms(q.from) : toMs - 3600_000;
+          if (toMs - fromMs > 7 * 24 * 3600_000) return bad(reply, '分钟级查询一次最多 7 天');
+          let deviceId: number | undefined;
+          if (typeof q.device === 'string' && q.device) {
+            const d = await findDevice(q.device);
+            if (!d) return sendError(reply, 404, 'NOT_FOUND', '设备不存在');
+            deviceId = d.id;
+          }
+          const list = await ctx.repos.traffic.rangeMinutes({ from: Math.floor(fromMs / 1000), to: Math.ceil(toMs / 1000), deviceId, limit: intQ(q.limit, 5000, 1, 50000) });
+          const cache = new Map<number, string>();
+          const total = { bytes_in: 0, bytes_out: 0, frames_in: 0, frames_out: 0 };
+          const items = [];
+          for (const t of list) {
+            if (!cache.has(t.deviceId)) cache.set(t.deviceId, (await ctx.repos.devices.findById(t.deviceId))?.code ?? '');
+            total.bytes_in += t.bytesIn;
+            total.bytes_out += t.bytesOut;
+            total.frames_in += t.framesIn;
+            total.frames_out += t.framesOut;
+            items.push({ minute: new Date(t.minute * 1000).toISOString(), device_code: cache.get(t.deviceId), bytes_in: t.bytesIn, bytes_out: t.bytesOut, frames_in: t.framesIn, frames_out: t.framesOut });
+          }
+          return { granularity: 'minute', from: new Date(fromMs).toISOString(), to: new Date(toMs).toISOString(), total, items };
+        }
         const isDate = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
         if ((q.from !== undefined && !isDate(q.from)) || (q.to !== undefined && !isDate(q.to))) return bad(reply, 'from/to 格式应为 YYYY-MM-DD');
         const to = isDate(q.to) ? q.to : utcDate();

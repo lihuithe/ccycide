@@ -71,6 +71,25 @@ describe('设备流量统计', () => {
     expect((await fetch(`${s.http}/v1/admin/traffic?from=abc`, { headers: H })).status).toBe(400);
     expect((await fetch(`${s.http}/v1/admin/traffic?device=000000000`, { headers: H })).status).toBe(404);
   });
+
+  it('分钟级：会话结束后分钟表有记录，合计与日表一致；参数不合法 400', async () => {
+    const { ctl } = await runSession([300, 300], [40]);
+    const code = ctl.identity.deviceCode;
+    let body: any;
+    await until(
+      async () => {
+        body = await (await fetch(`${s.http}/v1/admin/traffic?granularity=minute&device=${code}`, { headers: H })).json();
+        return body.items?.length >= 1;
+      },
+      3000,
+      '分钟级能查到流量',
+    );
+    expect(body.total).toEqual({ bytes_in: 40, bytes_out: 600, frames_in: 1, frames_out: 2 });
+    expect(body.items[0].minute).toMatch(/:00\.000Z$/);
+    expect((await fetch(`${s.http}/v1/admin/traffic?granularity=minute&from=abc`, { headers: H })).status).toBe(400);
+    expect((await fetch(`${s.http}/v1/admin/traffic?granularity=hour`, { headers: H })).status).toBe(400);
+    expect((await fetch(`${s.http}/v1/admin/traffic?granularity=minute&from=2026-01-01T00:00:00Z&to=2026-02-01T00:00:00Z`, { headers: H })).status).toBe(400);
+  });
 });
 
 describe('MemoryTrafficRepo', () => {
@@ -87,5 +106,18 @@ describe('MemoryTrafficRepo', () => {
     ]);
     expect(await r.range({ from: '2026-11-01', to: '2026-11-02', limit: 10 })).toHaveLength(3);
     expect(await r.range({ from: '2026-11-01', to: '2026-11-02', limit: 2 })).toHaveLength(2);
+  });
+
+  it('分钟表：同一分钟累加，不同分钟分开，按时间升序，[from, to) 过滤', async () => {
+    const r = new MemoryTrafficRepo();
+    const d = { bytesIn: 1, bytesOut: 2, framesIn: 1, framesOut: 1 };
+    await r.add('2026-11-01', [{ deviceId: 1, ...d }], 600);
+    await r.add('2026-11-01', [{ deviceId: 1, ...d }], 600);
+    await r.add('2026-11-01', [{ deviceId: 1, ...d }], 660);
+    expect(await r.rangeMinutes({ from: 600, to: 720, limit: 10 })).toEqual([
+      { deviceId: 1, minute: 600, bytesIn: 2, bytesOut: 4, framesIn: 2, framesOut: 2 },
+      { deviceId: 1, minute: 660, ...d },
+    ]);
+    expect(await r.rangeMinutes({ from: 600, to: 660, limit: 10 })).toHaveLength(1);
   });
 });
