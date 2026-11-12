@@ -1,6 +1,6 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 
-type IconName = 'copy' | 'refresh' | 'gear' | 'key' | 'close' | 'plus' | 'stop' | 'search' | 'more' | 'attach' | 'terminal' | 'sparkle' | 'up' | 'down' | 'check' | 'pause' | 'play' | 'file' | 'lock' | 'eye' | 'eyeOff';
+type IconName = 'copy' | 'refresh' | 'gear' | 'key' | 'close' | 'plus' | 'stop' | 'search' | 'more' | 'attach' | 'terminal' | 'sparkle' | 'up' | 'down' | 'check' | 'pause' | 'play' | 'file' | 'lock' | 'eye' | 'eyeOff' | 'menu';
 
 const PATHS: Record<IconName, ReactNode> = {
   copy: <path d="M5 5V3.5A1.5 1.5 0 0 1 6.5 2h6A1.5 1.5 0 0 1 14 3.5v6a1.5 1.5 0 0 1-1.5 1.5H11M3.5 5h6A1.5 1.5 0 0 1 11 6.5v6A1.5 1.5 0 0 1 9.5 14h-6A1.5 1.5 0 0 1 2 12.5v-6A1.5 1.5 0 0 1 3.5 5Z" />,
@@ -30,6 +30,7 @@ const PATHS: Record<IconName, ReactNode> = {
     </>
   ),
   close: <path d="m4 4 8 8M12 4l-8 8" />,
+  menu: <path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" />,
   plus: <path d="M8 3v10M3 8h10" />,
   stop: <rect x="4" y="4" width="8" height="8" rx="1.5" />,
   search: <path d="M7 12A5 5 0 1 0 7 2a5 5 0 0 0 0 10Zm3.5-1.5L14 14" />,

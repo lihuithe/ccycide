@@ -10,7 +10,14 @@ import { IconButton, Icon } from './common';
 
 const WEB = isWebTarget();
 
-export function Sidebar({ model, onSettings, onFixedPassword }: { model: AppModel; onSettings: () => void; onFixedPassword: () => void }) {
+export interface DrawerProps {
+  open: boolean;
+  /** 没有任何会话：铺满整个屏幕 */
+  solo: boolean;
+  onClose: () => void;
+}
+
+export function Sidebar({ model, onSettings, onFixedPassword, drawer }: { model: AppModel; onSettings: () => void; onFixedPassword: () => void; drawer?: DrawerProps }) {
   const c = useController();
   const [code, setCode] = useState('');
   const [showPw, setShowPw] = useState(false);
@@ -25,7 +32,11 @@ export function Sidebar({ model, onSettings, onFixedPassword }: { model: AppMode
   };
 
   return (
-    <aside className="sidebar">
+    <aside
+      className={`sidebar${drawer ? ' drawer' : ''}${drawer?.open ? ' open' : ''}${drawer?.solo ? ' solo' : ''}`}
+      // 手机上点了“已连接”里的某台设备：切过去并收起抽屉
+      onClick={(e) => drawer && !drawer.solo && (e.target as HTMLElement).closest('.session-row') && drawer.onClose()}
+    >
       <section className="card">
         <div className="card-head">
           <span className="card-title">{WEB ? '本设备（网页）' : '本机'}</span>

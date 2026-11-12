@@ -5,7 +5,7 @@ import { isBlocked } from '../lib/termErrors';
 import { notReadyHint } from '../lib/session';
 import { Icon, Popover } from './common';
 
-export function TabBar({ model, onNewClaude }: { model: AppModel; onNewClaude: () => void }) {
+export function TabBar({ model, onNewClaude, onMenu }: { model: AppModel; onNewClaude: () => void; onMenu?: () => void }) {
   const c = useController();
   const [menu, setMenu] = useState(false);
   const session = model.activeSessionId ? model.sessions[model.activeSessionId] : undefined;
@@ -16,6 +16,11 @@ export function TabBar({ model, onNewClaude }: { model: AppModel; onNewClaude: (
 
   return (
     <div className="tabbar">
+      {onMenu && (
+        <button type="button" className="icon-btn menu-btn" title="设备与连接" onClick={onMenu}>
+          <Icon name="menu" size={18} />
+        </button>
+      )}
       <div className="tabs" role="tablist">
         {model.tabOrder.map((key) => {
           const t = model.terms[key];

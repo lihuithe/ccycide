@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Controller } from './app/controller';
-import { ControllerContext, useController, useModel } from './app/hooks';
+import { ControllerContext, useCompact, useController, useModel, useVisualViewport } from './app/hooks';
 import { buildActionModel } from './lib/actions';
 import { ConfirmHost, FixedPasswordDialog, IncomingRequests, SafetyNotice, SettingsDialog, Toasts, UpdateBar } from './components/Dialogs';
 import { Sidebar } from './components/Sidebar';
@@ -69,6 +69,19 @@ function Shell() {
   const [claudeOpen, setClaudeOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
 
+  // 手机：侧栏是抽屉。没有任何会话时直接铺满显示连接表单；连上之后自动收起，点标签栏左边的菜单再打开
+  const compact = useCompact();
+  useVisualViewport(compact);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const sessionCount = model.sessionOrder.length;
+  const prevSessions = useRef(sessionCount);
+  useEffect(() => {
+    if (sessionCount > prevSessions.current) setDrawerOpen(false);
+    prevSessions.current = sessionCount;
+  }, [sessionCount]);
+  const solo = compact && sessionCount === 0;
+  const drawerVisible = compact && (drawerOpen || solo);
+
   const activeSession = model.activeSessionId ? model.sessions[model.activeSessionId] : undefined;
   const activeTab = model.activeKey ? model.terms[model.activeKey] : undefined;
   const tabSession = activeTab ? model.sessions[activeTab.sessionId] : undefined;
@@ -120,9 +133,15 @@ function Shell() {
     <div className="app">
       <UpdateBar model={model} />
       <div className="body">
-        <Sidebar model={model} onSettings={() => setSettingsOpen(true)} onFixedPassword={() => setFixedOpen(true)} />
+        <Sidebar
+          model={model}
+          onSettings={() => setSettingsOpen(true)}
+          onFixedPassword={() => setFixedOpen(true)}
+          drawer={compact ? { open: drawerVisible, solo, onClose: () => setDrawerOpen(false) } : undefined}
+        />
+        {compact && drawerVisible && !solo && <div className="drawer-mask" onClick={() => setDrawerOpen(false)} />}
         <main className="main">
-          <TabBar model={model} onNewClaude={() => setClaudeOpen(true)} />
+          <TabBar model={model} onNewClaude={() => setClaudeOpen(true)} onMenu={compact ? () => setDrawerOpen(true) : undefined} />
           <div className="stack">
             {model.tabOrder.map((key) => (
               <TermPane

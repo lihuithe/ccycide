@@ -1355,3 +1355,355 @@ select.input {
 .awaiting .btn {
   margin-left: auto;
 }
+
+/* ——— 手机 / 窄窗口（阈值与 app/hooks.ts 的 COMPACT_QUERY 一致）——— */
+.drawer-mask,
+.menu-btn {
+  display: none;
+}
+.mobile-keys {
+  flex: none;
+  display: flex;
+  gap: 6px;
+  padding: 6px 8px 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.mobile-keys::-webkit-scrollbar {
+  display: none;
+}
+.mk {
+  flex: none;
+  min-width: 40px;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--fg);
+  touch-action: manipulation;
+  cursor: pointer;
+}
+.mk:active {
+  background: var(--hover);
+}
+
+@media (max-width: 760px) {
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+  body {
+    font-size: 14px;
+    overscroll-behavior: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  /* 高度跟着可视视口走：软键盘弹出时输入框始终在键盘上方（变量由 useVisualViewport 写入） */
+  .app {
+    position: fixed;
+    left: 0;
+    right: 0;
+    top: var(--app-top, 0px);
+    height: var(--app-h, 100%);
+  }
+  .body {
+    position: relative;
+  }
+
+  /* 触摸目标 */
+  .icon-btn {
+    width: 40px;
+    height: 40px;
+    border-radius: 8px;
+  }
+  .btn {
+    height: 40px;
+    padding: 0 16px;
+  }
+  .btn.small {
+    height: 34px;
+    padding: 0 12px;
+  }
+  /* 16px 以上的输入框字号，iOS 才不会在聚焦时自动放大页面 */
+  .input {
+    height: 42px;
+    font-size: 16px;
+    padding: 0 12px;
+  }
+  .input.small {
+    height: 34px;
+    font-size: 14px;
+  }
+  .input.num {
+    width: 72px;
+  }
+  select.input {
+    padding-right: 8px;
+  }
+  .switch {
+    transform: scale(1.1);
+    transform-origin: right center;
+  }
+
+  /* 侧栏 → 左侧抽屉 */
+  .sidebar.drawer {
+    position: fixed;
+    z-index: 60;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(88vw, 360px);
+    padding: calc(10px + env(safe-area-inset-top)) 10px calc(10px + env(safe-area-inset-bottom)) calc(10px + env(safe-area-inset-left));
+    border-right: 1px solid var(--border);
+    box-shadow: var(--shadow);
+    transform: translateX(-102%);
+    transition: transform 0.2s ease-out;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
+  .sidebar.drawer.open {
+    transform: none;
+  }
+  /* 还没有任何会话：连接表单铺满屏幕 */
+  .sidebar.drawer.solo {
+    width: 100%;
+    border-right: 0;
+    box-shadow: none;
+  }
+  .drawer-mask {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 55;
+    background: rgba(8, 10, 16, 0.45);
+  }
+  .device-code {
+    font-size: 24px;
+  }
+  .session-row,
+  .recent-row {
+    padding: 10px 8px;
+    margin: 0 -8px;
+  }
+  .recent-remove {
+    opacity: 1;
+  }
+
+  /* 标签栏 */
+  .menu-btn {
+    display: inline-grid;
+    flex: none;
+    margin-bottom: 4px;
+    color: var(--fg);
+  }
+  .tabbar {
+    padding: max(6px, env(safe-area-inset-top)) max(6px, env(safe-area-inset-right)) 0 max(6px, env(safe-area-inset-left));
+    gap: 4px;
+  }
+  .tabs {
+    flex: 1;
+    -webkit-overflow-scrolling: touch;
+  }
+  .tab {
+    min-width: 108px;
+    max-width: 180px;
+    height: 38px;
+    padding: 0 4px 0 12px;
+  }
+  .tab.active {
+    height: 39px;
+  }
+  .tab-close {
+    opacity: 1;
+    width: 28px;
+    height: 28px;
+  }
+  .tabbar > .menu-anchor .icon-btn {
+    margin-bottom: 4px;
+  }
+  .badge {
+    right: 32px;
+  }
+
+  /* 终端 */
+  .term-host .xterm {
+    padding: 4px 2px 0 6px;
+  }
+  .banner {
+    flex-wrap: wrap;
+  }
+  .search-bar {
+    left: 8px;
+    right: 8px;
+    max-width: none;
+  }
+
+  /* Claude 工具条：一行放不下就横向滑动 */
+  .claude-toolbar {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    gap: 12px;
+    padding: 6px 10px;
+    scrollbar-width: none;
+  }
+  .claude-toolbar > * {
+    flex: none;
+  }
+  .claude-toolbar::-webkit-scrollbar {
+    display: none;
+  }
+  .tb-select select {
+    height: 34px;
+    font-size: 14px;
+  }
+  .perm-card {
+    margin-left: 8px;
+    margin-right: 8px;
+  }
+
+  /* 输入框 */
+  .composer {
+    margin: 6px 8px calc(6px + env(safe-area-inset-bottom));
+  }
+  .composer-row {
+    gap: 6px;
+    padding: 6px;
+  }
+  .composer-input {
+    font-size: 16px;
+    padding: 8px 6px;
+    max-height: 30vh;
+  }
+  .composer-row .btn.small {
+    height: 38px;
+  }
+  .send-btn {
+    flex: none;
+  }
+  .composer-hint {
+    display: none;
+  }
+  .att {
+    min-height: 44px;
+  }
+  .pass-bar {
+    margin: 6px 8px calc(6px + env(safe-area-inset-bottom));
+  }
+  .pass-bar.collapsed {
+    margin: 4px 8px calc(4px + env(safe-area-inset-bottom));
+  }
+  .completion {
+    max-height: 40vh;
+    overflow-y: auto;
+  }
+  .completion-item {
+    padding: 10px 12px;
+  }
+
+  /* 状态栏 */
+  .statusbar {
+    height: auto;
+    min-height: 26px;
+    padding: 3px max(10px, env(safe-area-inset-right)) max(3px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+  }
+  /* 输入框已经把底部安全区留出来了：有输入框时状态栏不重复留 */
+  .stack + .statusbar {
+    padding-bottom: 3px;
+  }
+
+  /* 对话框 → 底部弹层 */
+  .modal-mask {
+    place-items: end center;
+  }
+  .modal {
+    width: 100% !important;
+    max-width: 100%;
+    max-height: calc(var(--app-h, 100vh) - 24px);
+    border-radius: 16px 16px 0 0;
+    border-bottom: 0;
+  }
+  .modal-title {
+    padding: 16px 16px 4px;
+  }
+  .modal-body {
+    padding: 10px 16px;
+  }
+  .modal-footer {
+    padding: 10px 16px calc(14px + env(safe-area-inset-bottom));
+  }
+  .modal-footer .btn {
+    flex: 1;
+  }
+  .field {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+  .field-label {
+    padding-top: 0;
+  }
+  .setting-row {
+    min-height: 48px;
+    gap: 12px;
+  }
+  .segmented button {
+    height: 36px;
+  }
+  .popover {
+    max-width: calc(100vw - 16px);
+  }
+  .menu-item {
+    padding: 11px 12px;
+  }
+  .popover.up {
+    max-height: 50vh;
+  }
+
+  /* 命令面板 */
+  .palette-mask {
+    padding-top: calc(env(safe-area-inset-top) + 8px);
+  }
+  .palette {
+    width: calc(100vw - 16px);
+    max-width: none;
+  }
+  .palette-input {
+    height: 48px;
+    font-size: 16px;
+  }
+  .palette-list {
+    max-height: calc(var(--app-h, 100vh) - 140px);
+  }
+  .palette-item {
+    padding: 12px 14px;
+  }
+
+  /* 提示 */
+  .toasts {
+    left: 8px;
+    right: 8px;
+    bottom: calc(86px + env(safe-area-inset-bottom));
+    align-items: stretch;
+  }
+  .toast {
+    max-width: none;
+  }
+  .incoming-requests {
+    left: 8px;
+    right: 8px;
+    top: calc(env(safe-area-inset-top) + 8px);
+  }
+  .request-card {
+    min-width: 0;
+  }
+  .update-bar {
+    flex-wrap: wrap;
+    padding-top: max(5px, env(safe-area-inset-top));
+  }
+  .empty-actions {
+    flex-direction: column;
+    width: min(260px, 80%);
+  }
+}

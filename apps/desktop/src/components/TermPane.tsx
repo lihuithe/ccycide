@@ -7,6 +7,7 @@ import { needsPasswordAgain, remainingSeconds } from '../lib/session';
 import { blockedText, isBlocked, type BlockedStatus } from '../lib/termErrors';
 import type { SessionModel, TermTab } from '../state/store';
 import { Composer, PassthroughBar } from './Composer';
+import { MobileKeys } from './MobileKeys';
 import { Icon } from './common';
 import { TermView } from './TermView';
 import { ClaudeToolbar } from './claude/Toolbar';
@@ -134,6 +135,7 @@ function TermPaneImpl({ tab, session, active, uploads, dragging, onOpenPalette }
         />
       )}
       {canFold && !toolbarShown && <div className="ops-handle">{foldButton}</div>}
+      {tab.status === 'open' && ready && <MobileKeys tab={tab} />}
       <div className={tab.passthrough !== 'off' || tab.status === 'exited' || isBlocked(tab.status) ? 'composer-hidden' : ''}>
         <Composer
           tab={tab}

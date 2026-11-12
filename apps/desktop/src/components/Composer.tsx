@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent } from 'react';
-import { useController } from '../app/hooks';
+import { useCompact, useController } from '../app/hooks';
 import { Features, type CommandError, type CustomCommand, type FileId } from '../backend/types';
 import {
   attachmentProgress,
@@ -32,6 +32,8 @@ interface Props {
 /** 输入框：本地编辑，按键规则见 lib/composer.ts */
 function ComposerImpl({ tab, sessionReady, features, maxFileSize, uploads, dragging, active }: Props) {
   const c = useController();
+  // 手机软键盘没有 Shift+回车：回车换行，用“发送”按钮提交
+  const compact = useCompact();
   const taRef = useRef<HTMLTextAreaElement>(null);
   const machine = useRef(new ComposerMachine());
   const retryRef = useRef(new Map<string, () => void>());
@@ -255,6 +257,7 @@ function ComposerImpl({ tab, sessionReady, features, maxFileSize, uploads, dragg
         e.preventDefault();
         return c.sendInput(key, d.bytes);
       case 'submit':
+        if (compact) return;
         e.preventDefault();
         return void doSubmit();
       case 'togglePassthrough':
@@ -294,7 +297,7 @@ function ComposerImpl({ tab, sessionReady, features, maxFileSize, uploads, dragg
     );
   };
 
-  const placeholder = !sessionReady ? '未连接' : '输入消息';
+  const placeholder = !sessionReady ? '未连接' : compact ? '输入消息，点“发送”提交' : '输入消息';
 
   return (
     <div className={`composer${dragging && active ? ' drop' : ''}`}>
@@ -361,6 +364,12 @@ function ComposerImpl({ tab, sessionReady, features, maxFileSize, uploads, dragg
         <button type="button" className="btn small" title="直通模式 (Ctrl+Shift+P)" onClick={() => c.togglePassthrough(key)}>
           直通
         </button>
+        {compact && (
+          // 按下时不抢走输入框焦点，软键盘不会收起
+          <button type="button" className="btn small primary send-btn" onPointerDown={(e) => e.preventDefault()} onClick={() => void doSubmit()}>
+            发送
+          </button>
+        )}
       </div>
     </div>
   );
