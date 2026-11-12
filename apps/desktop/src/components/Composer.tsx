@@ -13,6 +13,7 @@ import {
 import { ComposerMachine } from '../lib/composer';
 import { allCompletionItems, completionInsertText, completionQuery, filterCompletions } from '../lib/completion';
 import { formatBytes } from '../lib/format';
+import { pushInputHistory } from '../lib/inputHistory';
 import { keyNameLabel } from '../lib/keys';
 import type { TermTab } from '../state/store';
 import { Icon, IconButton } from './common';
@@ -200,6 +201,7 @@ function ComposerImpl({ tab, sessionReady, features, maxFileSize, uploads, dragg
     const ok = await c.submit(key, value, ids);
     if (!ok) return; // 未连接/重连中：保留输入内容，提示已由控制器给出
     machine.current.history.push(value);
+    pushInputHistory(value);
     machine.current.resetEsc();
     atts.forEach((a) => a.previewUrl && URL.revokeObjectURL(a.previewUrl));
     retryRef.current.clear();

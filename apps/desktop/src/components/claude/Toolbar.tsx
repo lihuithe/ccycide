@@ -1,14 +1,16 @@
-import { useState, type ReactNode } from 'react';
+import { Fragment, useState, type ReactNode } from 'react';
 import type { ActionCatalog, ActionDef, AppState } from '../../backend/types';
 import { SPECIAL_ACTION, findAction, needsParamInput, type ActionModel, type ToolbarItem } from '../../lib/actions';
 import { Icon, IconButton } from '../common';
 import { ActionMenu } from './ActionMenu';
+import { HistoryButton } from './HistoryButton';
 import { ParamDialog } from './ParamDialog';
 
 const ACTIVITY_TEXT = { idle: '空闲', busy: '工作中', waiting_permission: '等待确认' } as const;
 
 /** Claude Code 工具条：完全由动作目录生成 */
 export function ClaudeToolbar({
+  tabKey,
   model,
   catalog,
   app,
@@ -16,6 +18,7 @@ export function ClaudeToolbar({
   onOpenPalette,
   trailing,
 }: {
+  tabKey: string;
   model: ActionModel;
   catalog: ActionCatalog;
   app: AppState | null;
@@ -58,18 +61,22 @@ export function ClaudeToolbar({
 
       <span className="spacer" />
 
-      {buttons.map((t) =>
-        t.def.id === 'interrupt' || t.def.enabledWhen === 'busy' ? (
-          <button key={t.def.id} type="button" className="btn small stop" disabled={!t.enabled} title={t.def.note || t.def.title} onClick={() => onRun(t.def, {})}>
-            <Icon name="stop" size={12} />
-            {t.def.title}
-          </button>
-        ) : (
-          <button key={t.def.id} type="button" className="btn small" disabled={!t.enabled} title={t.def.note || undefined} onClick={() => onRun(t.def, {})}>
-            {t.def.title}
-          </button>
-        ),
-      )}
+      {!buttons.some((t) => t.def.id === 'mode.cycle') && <HistoryButton tabKey={tabKey} />}
+      {buttons.map((t) => (
+        <Fragment key={t.def.id}>
+          {t.def.id === 'mode.cycle' && <HistoryButton tabKey={tabKey} />}
+          {t.def.id === 'interrupt' || t.def.enabledWhen === 'busy' ? (
+            <button type="button" className="btn small stop" disabled={!t.enabled} title={t.def.note || t.def.title} onClick={() => onRun(t.def, {})}>
+              <Icon name="stop" size={12} />
+              {t.def.title}
+            </button>
+          ) : (
+            <button type="button" className="btn small" disabled={!t.enabled} title={t.def.note || undefined} onClick={() => onRun(t.def, {})}>
+              {t.def.title}
+            </button>
+          )}
+        </Fragment>
+      ))}
 
       <ActionMenu groups={model.menu} onPick={pick} />
       <IconButton icon="search" title="命令面板 (Ctrl+K)" onClick={onOpenPalette} />

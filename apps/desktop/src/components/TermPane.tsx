@@ -114,6 +114,7 @@ function TermPaneImpl({ tab, session, active, uploads, dragging, onOpenPalette }
 
       {showToolbar && !opsCollapsed && session?.catalog && (
         <ClaudeToolbar
+          tabKey={tab.key}
           model={actionModel}
           catalog={session.catalog}
           app={tab.app}
