@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react';
 import { useConfirmRequest, useController, useNow } from '../app/hooks';
 import { resolveConfirm } from '../app/ui';
+import { isWebTarget } from '../backend';
 import type { Settings, TempPasswordPolicy, ThemeChoice } from '../backend/types';
 import { formatDeviceCode, formatDuration, platformLabel } from '../lib/format';
 import { pendingQueue, waitedMs } from '../lib/incoming';
@@ -181,6 +182,8 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
+const WEB = isWebTarget();
+
 export function SettingsDialog({ settings, onClose }: { settings: Settings; onClose: () => void }) {
   const c = useController();
   // 每次修改立即保存
@@ -194,6 +197,7 @@ export function SettingsDialog({ settings, onClose }: { settings: Settings; onCl
   return (
     <Modal title="设置" onClose={onClose} width={480} footer={<button type="button" className="btn primary" onClick={onClose}>完成</button>}>
       <div className="settings">
+        {!WEB && (<>
         <div className="settings-group">被控</div>
         <Row label="允许被远程连接">
           <Switch checked={h.enabled} onChange={(v) => update((s) => ((s.host.enabled = v), s))} />
@@ -231,6 +235,8 @@ export function SettingsDialog({ settings, onClose }: { settings: Settings; onCl
           <Switch checked={h.claudeStatusline} disabled={!h.claudeIntegration} onChange={(v) => update((s) => ((s.host.claudeStatusline = v), s))} />
         </Row>
 
+        </>)}
+
         <div className="settings-group">主控</div>
         <Row label="主题">
           <select className="input small" value={ctl.theme} onChange={(e) => update((s) => ((s.controller.theme = e.target.value as ThemeChoice), s))}>
@@ -259,6 +265,7 @@ export function SettingsDialog({ settings, onClose }: { settings: Settings; onCl
           <Switch checked={ctl.notifyOnPermission} onChange={(v) => update((s) => ((s.controller.notifyOnPermission = v), s))} />
         </Row>
 
+        {!WEB && (<>
         <div className="settings-group">应用</div>
         <Row label="关闭窗口时最小化到托盘">
           <Switch checked={app.closeToTray} onChange={(v) => update((s) => ((s.app.closeToTray = v), s))} />
@@ -286,6 +293,12 @@ export function SettingsDialog({ settings, onClose }: { settings: Settings; onCl
             </button>
           </span>
         </Row>
+        </>)}
+        {WEB && (
+          <Row label="版本">
+            <span className="muted">{c.store.getState().local?.appVersion}（网页版）</span>
+          </Row>
+        )}
       </div>
     </Modal>
   );

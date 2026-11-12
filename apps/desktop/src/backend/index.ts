@@ -1,6 +1,7 @@
 /**
  * Backend 接口：前端访问“核心库 + 系统能力”的唯一入口。
- * 两套实现：tauri.ts（真实，invoke/listen/Channel + 插件）与 mock.ts（纯浏览器假后端）。
+ * 三套实现：tauri.ts（真实，invoke/listen/Channel + 插件）、web/web.ts（浏览器里直接实现主控端，VITE_TARGET=web 构建）
+ * 与 mock.ts（纯浏览器假后端）。
  *
  * Tauri 命令一览（snake_case，参数键 camelCase；括号内为前端方法名）
  *
@@ -72,7 +73,7 @@ import type {
 export * from './types';
 
 export interface Backend {
-  readonly kind: 'tauri' | 'mock';
+  readonly kind: 'tauri' | 'mock' | 'web';
 
   // —— 本机（被控）——
   localInfo(): Promise<LocalInfo>;
@@ -140,6 +141,9 @@ export function isTauri(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
+/** 是否是 Web 版构建（vite --mode web，VITE_TARGET=web） */
+export const isWebTarget = (): boolean => import.meta.env.VITE_TARGET === 'web';
+
 /** 把任意抛出的值规整成 CommandError */
 export function toCommandError(e: unknown): CommandError {
   if (e && typeof e === 'object' && 'code' in e && 'message' in e) {
@@ -156,6 +160,8 @@ let cached: Promise<Backend> | null = null;
 export function getBackend(): Promise<Backend> {
   cached ??= isTauri()
     ? import('./tauri').then((m) => m.createTauriBackend())
-    : import('./mock').then((m) => m.createMockBackend());
+    : isWebTarget()
+      ? import('./web/web').then((m) => m.createWebBackend())
+      : import('./mock').then((m) => m.createMockBackend());
   return cached;
 }

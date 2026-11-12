@@ -1,4 +1,5 @@
 import { useRef, useState, type FormEvent, type RefObject } from 'react';
+import { isWebTarget } from '../backend';
 import type { CommandError } from '../backend/types';
 import { newRequestId } from '../app/controller';
 import { useController, useNow } from '../app/hooks';
@@ -6,6 +7,8 @@ import type { AppModel } from '../state/store';
 import { formatDeviceCode, formatDuration, parseDeviceCode, platformLabel } from '../lib/format';
 import { connectErrorText, statusText } from '../lib/session';
 import { IconButton, Icon } from './common';
+
+const WEB = isWebTarget();
 
 export function Sidebar({ model, onSettings, onFixedPassword }: { model: AppModel; onSettings: () => void; onFixedPassword: () => void }) {
   const c = useController();
@@ -25,10 +28,10 @@ export function Sidebar({ model, onSettings, onFixedPassword }: { model: AppMode
     <aside className="sidebar">
       <section className="card">
         <div className="card-head">
-          <span className="card-title">本机</span>
+          <span className="card-title">{WEB ? '本设备（网页）' : '本机'}</span>
           <span className={`dot ${model.online ? 'ok' : 'off'}`} title={model.online ? '信令在线' : '信令离线'} />
           <span className="spacer" />
-          <IconButton icon={hostEnabled ? 'pause' : 'play'} title={hostEnabled ? '暂停被控' : '恢复被控'} onClick={togglePause} active={!hostEnabled} />
+          {!WEB && <IconButton icon={hostEnabled ? 'pause' : 'play'} title={hostEnabled ? '暂停被控' : '恢复被控'} onClick={togglePause} active={!hostEnabled} />}
           <IconButton icon="gear" title="设置" onClick={onSettings} />
         </div>
         {local ? (
@@ -37,15 +40,16 @@ export function Sidebar({ model, onSettings, onFixedPassword }: { model: AppMode
               <span className="device-code">{formatDeviceCode(local.deviceCode)}</span>
               <IconButton icon="copy" title="复制设备码" onClick={() => void c.copy(local.deviceCode)} />
             </div>
-            <div className="pw-row">
+            {WEB && <div className="note-line">网页版只能连接别的设备。设备身份保存在本浏览器里，清除站点数据后会变成新设备。</div>}
+            {!WEB && <div className="pw-row">
               <span className="pw-label">密码</span>
               <span className="pw-value">{showPw ? local.tempPassword : '••••••••'}</span>
               <IconButton icon={showPw ? 'eyeOff' : 'eye'} title={showPw ? '隐藏密码' : '显示密码'} onClick={() => setShowPw((v) => !v)} />
               <IconButton icon="copy" title="复制密码" onClick={() => void c.copy(local.tempPassword)} />
               <IconButton icon="refresh" title="刷新临时密码" onClick={() => void c.refreshPassword()} />
               <IconButton icon="key" title={local.fixedPasswordSet ? '固定密码（已设置）' : '设置固定密码'} onClick={onFixedPassword} active={local.fixedPasswordSet} />
-            </div>
-            {!hostEnabled && <div className="note-line warn">已暂停，他人无法连接</div>}
+            </div>}
+            {!WEB && !hostEnabled && <div className="note-line warn">已暂停，他人无法连接</div>}
           </>
         ) : (
           <div className="muted">加载中…</div>

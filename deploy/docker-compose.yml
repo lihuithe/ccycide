@@ -27,9 +27,11 @@ services:
       API_DOMAIN: ${API_DOMAIN}
       SIGNAL_DOMAIN: ${SIGNAL_DOMAIN}
       RELAY_DOMAIN: ${RELAY_DOMAIN}
+      WEB_DOMAIN: ${WEB_DOMAIN:-localhost}
       ACME_EMAIL: ${ACME_EMAIL}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./web:/srv/web:ro         # Web 版界面的静态文件（npm run build:web 的产物）
       - caddy_data:/data          # 证书存在这里，不能丢
       - caddy_config:/config
     depends_on:

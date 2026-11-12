@@ -16,6 +16,7 @@ const isMac = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform
 export function App() {
   const [controller, setController] = useState<Controller | null>(null);
   const [error, setError] = useState('');
+  const [errorCode, setErrorCode] = useState('');
 
   useEffect(() => {
     let c: Controller | null = null;
@@ -26,7 +27,10 @@ export function App() {
         c = created;
         setController(created);
       },
-      (e: unknown) => setError(e instanceof Error ? e.message : String((e as { message?: string })?.message ?? e)),
+      (e: unknown) => {
+        setError(e instanceof Error ? e.message : String((e as { message?: string })?.message ?? e));
+        setErrorCode(String((e as { code?: string })?.code ?? ''));
+      },
     );
     return () => {
       cancelled = true;
@@ -34,7 +38,21 @@ export function App() {
     };
   }, []);
 
-  if (error) return <div className="boot error">启动失败：{error}</div>;
+  if (error) {
+    return (
+      <div className="boot error">
+        {errorCode === 'ACTIVE_ELSEWHERE' ? '' : '启动失败：'}
+        {error}
+        {errorCode === 'ACTIVE_ELSEWHERE' && (
+          <div style={{ marginTop: 16 }}>
+            <button type="button" className="btn primary" onClick={() => void import('./backend/web/web').then((m) => m.takeOverActiveTab())}>
+              接管（原标签页会被关闭）
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
   if (!controller) return <div className="boot">加载中…</div>;
   return (
     <ControllerContext.Provider value={controller}>
