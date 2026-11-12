@@ -36,7 +36,7 @@ d('MySQL：迁移与仓储层（knex）', () => {
   it('迁移建出全部表，再执行一次没有新迁移', async () => {
     const [rows] = await db.raw('show tables');
     const names = (rows as Array<Record<string, string>>).map((r) => Object.values(r)[0]);
-    for (const t of ['devices', 'sessions', 'security_events', 'bans', 'relay_nodes', 'app_releases', 'app_config', 'daily_stats', 'admin_users', 'admin_audit_logs']) {
+    for (const t of ['devices', 'sessions', 'security_events', 'bans', 'relay_nodes', 'app_releases', 'app_config', 'daily_stats', 'device_traffic', 'admin_users', 'admin_audit_logs']) {
       expect(names).toContain(t);
     }
     const [batch, files] = await db.migrate.latest();
@@ -187,6 +187,20 @@ d('MySQL：迁移与仓储层（knex）', () => {
     await repos.stats.apply('2030-01-02', { newDevices: 1, authFailures: 2 }, { peakOnline: 3, peakSessions: 9 });
     const st = (await repos.stats.range('2030-01-02', '2030-01-02'))[0]!;
     expect(st).toMatchObject({ statDate: '2030-01-02', newDevices: 3, sessionsTotal: 3, authFailures: 2, bytesRelayed: 4_000_000_000, peakOnline: 5, peakSessions: 9, activeDevices: 7 });
+
+    // 设备每日流量：同一天累加；同一条语句里同一设备出现两次也累加；超过 32 位的字节数不溢出
+    await db('device_traffic').where({ stat_date: '2030-01-03' }).delete();
+    await repos.traffic.add('2030-01-03', [
+      { deviceId: 900001, bytesIn: 5_000_000_000, bytesOut: 10, framesIn: 3, framesOut: 1 },
+      { deviceId: 900001, bytesIn: 1, bytesOut: 10, framesIn: 1, framesOut: 1 },
+      { deviceId: 900002, bytesIn: 7, bytesOut: 8, framesIn: 1, framesOut: 1 },
+    ]);
+    await repos.traffic.add('2030-01-03', [{ deviceId: 900001, bytesIn: 1, bytesOut: 1, framesIn: 1, framesOut: 1 }]);
+    expect(await repos.traffic.range({ from: '2030-01-03', to: '2030-01-03', deviceId: 900001, limit: 10 })).toEqual([
+      { deviceId: 900001, statDate: '2030-01-03', bytesIn: 5_000_000_002, bytesOut: 21, framesIn: 5, framesOut: 3 },
+    ]);
+    expect(await repos.traffic.range({ from: '2030-01-03', to: '2030-01-03', limit: 10 })).toHaveLength(2);
+    await db('device_traffic').where({ stat_date: '2030-01-03' }).delete();
   });
 });
 

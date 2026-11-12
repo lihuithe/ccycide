@@ -27,6 +27,9 @@ import {
   type SessionRecord,
   type SessionsRepo,
   type StatsRepo,
+  type DeviceTraffic,
+  type TrafficDelta,
+  type TrafficRepo,
 } from './types.js';
 
 /*
@@ -535,6 +538,41 @@ export class KnexStatsRepo implements StatsRepo {
   }
 }
 
+export class KnexTrafficRepo implements TrafficRepo {
+  constructor(private db: Knex) {}
+
+  async add(dateStr: string, rows: TrafficDelta[]): Promise<void> {
+    if (rows.length === 0) return;
+    const f = (n: number): number => Math.max(0, Math.floor(n));
+    const values = rows.map(() => '(?, ?, ?, ?, ?, ?)').join(', ');
+    const params = rows.flatMap((r) => [r.deviceId, dateStr, f(r.bytesIn), f(r.bytesOut), f(r.framesIn), f(r.framesOut)]);
+    await this.db.raw(
+      `INSERT INTO device_traffic (device_id, stat_date, bytes_in, bytes_out, frames_in, frames_out)
+       VALUES ${values}
+       ON DUPLICATE KEY UPDATE
+         bytes_in = bytes_in + VALUES(bytes_in),
+         bytes_out = bytes_out + VALUES(bytes_out),
+         frames_in = frames_in + VALUES(frames_in),
+         frames_out = frames_out + VALUES(frames_out)`,
+      params,
+    );
+  }
+
+  async range(q: { from: string; to: string; deviceId?: number; limit: number }): Promise<DeviceTraffic[]> {
+    const qb = this.db('device_traffic').whereBetween('stat_date', [q.from, q.to]);
+    if (q.deviceId !== undefined) qb.andWhere('device_id', q.deviceId);
+    const rows = await qb.orderBy('stat_date', 'desc').orderBy('device_id').limit(q.limit);
+    return rows.map((r: Row) => ({
+      deviceId: num(r.device_id),
+      statDate: r.stat_date instanceof Date ? r.stat_date.toISOString().slice(0, 10) : String(r.stat_date).slice(0, 10),
+      bytesIn: num(r.bytes_in),
+      bytesOut: num(r.bytes_out),
+      framesIn: num(r.frames_in),
+      framesOut: num(r.frames_out),
+    }));
+  }
+}
+
 export function createKnexRepos(db: Knex): Repos {
   return {
     devices: new KnexDevicesRepo(db),
@@ -546,6 +584,7 @@ export function createKnexRepos(db: Knex): Repos {
     relayNodes: new KnexRelayNodesRepo(db),
     audit: new KnexAuditRepo(db),
     stats: new KnexStatsRepo(db),
+    traffic: new KnexTrafficRepo(db),
     async close() {
       await db.destroy();
     },

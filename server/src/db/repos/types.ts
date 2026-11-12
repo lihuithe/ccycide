@@ -266,6 +266,25 @@ export interface StatsRepo {
   range(from: string, to: string): Promise<DailyStat[]>;
 }
 
+// ---------- 设备每日流量 ----------
+/** 某台设备在某天的流量。in = 该设备收到的，out = 该设备发出的（相对设备本身，不是相对服务器） */
+export interface DeviceTraffic {
+  deviceId: number;
+  statDate: string;
+  bytesIn: number;
+  bytesOut: number;
+  framesIn: number;
+  framesOut: number;
+}
+
+export type TrafficDelta = Omit<DeviceTraffic, 'statDate'>;
+
+export interface TrafficRepo {
+  /** 一次性累加多台设备的增量（单条语句，失败重试不会重复累加一部分） */
+  add(date: string, rows: TrafficDelta[]): Promise<void>;
+  range(q: { from: string; to: string; deviceId?: number; limit: number }): Promise<DeviceTraffic[]>;
+}
+
 export interface Repos {
   devices: DevicesRepo;
   sessions: SessionsRepo;
@@ -276,6 +295,7 @@ export interface Repos {
   relayNodes: RelayNodesRepo;
   audit: AuditRepo;
   stats: StatsRepo;
+  traffic: TrafficRepo;
   /** 释放连接 */
   close(): Promise<void>;
 }

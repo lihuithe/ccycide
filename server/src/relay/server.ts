@@ -68,6 +68,11 @@ interface Session {
   h: Peer;
   bytesC2h: number;
   bytesH2c: number;
+  /** 转发的 WebSocket 帧数（一帧 = 一条加密记录） */
+  framesC2h: number;
+  framesH2c: number;
+  /** 已经通过 traffic 事件上报过的部分，下次只报增量 */
+  sent: { c2h: number; h2c: number; fc: number; fh: number };
   closing: boolean;
 }
 
@@ -147,10 +152,13 @@ export class RelayServer {
     );
     // 每 10 秒向注册表上报负载，30 秒没上报视为下线
     this.timers.push(every(10_000, () => void this.report()));
-    // 每 30 秒给进行中的会话续期“同时会话数”计数
+    // 每 30 秒给进行中的会话续期“同时会话数”计数，并上报这段时间的流量增量
     this.timers.push(
       every(30_000, () => {
-        for (const s of this.sessions.values()) void this.touchTracker(s);
+        for (const s of this.sessions.values()) {
+          void this.touchTracker(s);
+          this.publishTraffic(s);
+        }
       }),
     );
   }
@@ -313,7 +321,7 @@ export class RelayServer {
     const t = ctx.cfg.tunables;
     const c = a.role === 'c' ? a : b;
     const h = a.role === 'c' ? b : a;
-    const s: Session = { sid: a.ticket!.sid, c, h, bytesC2h: 0, bytesH2c: 0, closing: false };
+    const s: Session = { sid: a.ticket!.sid, c, h, bytesC2h: 0, bytesH2c: 0, framesC2h: 0, framesH2c: 0, sent: { c2h: 0, h2c: 0, fc: 0, fh: 0 }, closing: false };
     this.sessions.set(s.sid, s);
     for (const p of [c, h]) {
       p.session = s;
@@ -359,8 +367,13 @@ export class RelayServer {
     const dst = src.other;
     if (!s || !dst || s.closing) return;
     const n = buf.length;
-    if (src.role === 'c') s.bytesC2h += n;
-    else s.bytesH2c += n;
+    if (src.role === 'c') {
+      s.bytesC2h += n;
+      s.framesC2h++;
+    } else {
+      s.bytesH2c += n;
+      s.framesH2c++;
+    }
     this.bytesWindow += n;
     this.ctx.m.relayBytes.inc({ dir: src.role === 'c' ? 'c2h' : 'h2c' }, n);
 
@@ -477,9 +490,22 @@ export class RelayServer {
     this.ctx.m.relaySessions.set(this.sessions.size);
     void this.flushQuota(s.c);
     void this.flushQuota(s.h);
+    // 最后一段流量增量要排在 ended 事件前面（事件通道保序）
+    this.publishTraffic(s);
     this.publishEnded(s.sid, reason, s.bytesC2h, s.bytesH2c);
     void this.ctx.stores.tracker.remove(s.c.ticket!.did, s.sid).catch(() => {});
     void this.ctx.stores.tracker.remove(s.h.ticket!.did, s.sid).catch(() => {});
+  }
+
+  /** 上报自上次以来的流量增量；没有增量就不发 */
+  private publishTraffic(s: Session): void {
+    const fc = s.framesC2h - s.sent.fc;
+    const fh = s.framesH2c - s.sent.fh;
+    if (fc === 0 && fh === 0) return;
+    const c2h = s.bytesC2h - s.sent.c2h;
+    const h2c = s.bytesH2c - s.sent.h2c;
+    s.sent = { c2h: s.bytesC2h, h2c: s.bytesH2c, fc: s.framesC2h, fh: s.framesH2c };
+    this.publish({ type: 'traffic', sid: s.sid, node: this.ctx.cfg.relay.nodeName, bytesC2h: c2h, bytesH2c: h2c, framesC2h: fc, framesH2c: fh, ts: Date.now() });
   }
 
   private publishEnded(sid: string, reason: string, c2h: number, h2c: number): void {

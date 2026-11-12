@@ -1,6 +1,7 @@
 import type { Ctx } from '../context.js';
 import { SessionStatus } from '../db/repos/index.js';
 import type { RelaySessionEvent } from '../store/index.js';
+import { utcDate } from '../util/time.js';
 
 /**
  * 会话状态机（sessions.status）：
@@ -35,6 +36,16 @@ export async function markClosed(ctx: Ctx, uid: string): Promise<void> {
 export async function applyRelayEvent(ctx: Ctx, ev: RelaySessionEvent): Promise<void> {
   const s = await ctx.repos.sessions.get(ev.sid);
   if (!s) return;
+  if (ev.type === 'traffic') {
+    // 控制端 -> 被控端的流量：控制端发出、被控端收到；反方向相反。两台设备一次写入（单条语句，重试不会只记一半）
+    const c2h = { bytes: ev.bytesC2h ?? 0, frames: ev.framesC2h ?? 0 };
+    const h2c = { bytes: ev.bytesH2c ?? 0, frames: ev.framesH2c ?? 0 };
+    await ctx.repos.traffic.add(utcDate(new Date(ev.ts)), [
+      { deviceId: s.controllerDeviceId, bytesIn: h2c.bytes, bytesOut: c2h.bytes, framesIn: h2c.frames, framesOut: c2h.frames },
+      { deviceId: s.hostDeviceId, bytesIn: c2h.bytes, bytesOut: h2c.bytes, framesIn: c2h.frames, framesOut: h2c.frames },
+    ]);
+    return;
+  }
   if (ev.type === 'paired') {
     await ctx.repos.sessions.transition(ev.sid, { status: S.Paired }, [S.Pending, S.Accepted]);
     return;

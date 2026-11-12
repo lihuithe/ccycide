@@ -233,6 +233,34 @@ export function adminRoutes(app: FastifyInstance, ctx: Ctx, signal: SignalContro
         return { items };
       });
 
+      // ----- 设备流量（按天）：in = 设备收到的，out = 设备发出的 -----
+      admin.get<{ Querystring: Body }>('/traffic', async (req, reply) => {
+        const q = req.query;
+        const isDate = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v);
+        if ((q.from !== undefined && !isDate(q.from)) || (q.to !== undefined && !isDate(q.to))) return bad(reply, 'from/to 格式应为 YYYY-MM-DD');
+        const to = isDate(q.to) ? q.to : utcDate();
+        const from = isDate(q.from) ? q.from : utcDate(new Date(Date.parse(`${to}T00:00:00Z`) - 6 * 24 * 3600_000));
+        let deviceId: number | undefined;
+        if (typeof q.device === 'string' && q.device) {
+          const d = await findDevice(q.device);
+          if (!d) return sendError(reply, 404, 'NOT_FOUND', '设备不存在');
+          deviceId = d.id;
+        }
+        const list = await ctx.repos.traffic.range({ from, to, deviceId, limit: intQ(q.limit, 500, 1, 5000) });
+        const cache = new Map<number, string>();
+        const total = { bytes_in: 0, bytes_out: 0, frames_in: 0, frames_out: 0 };
+        const items = [];
+        for (const t of list) {
+          if (!cache.has(t.deviceId)) cache.set(t.deviceId, (await ctx.repos.devices.findById(t.deviceId))?.code ?? '');
+          total.bytes_in += t.bytesIn;
+          total.bytes_out += t.bytesOut;
+          total.frames_in += t.framesIn;
+          total.frames_out += t.framesOut;
+          items.push({ date: t.statDate, device_code: cache.get(t.deviceId), bytes_in: t.bytesIn, bytes_out: t.bytesOut, frames_in: t.framesIn, frames_out: t.framesOut });
+        }
+        return { from, to, total, items };
+      });
+
       admin.get<{ Querystring: Body }>('/security-events', async (req) => {
         const q = req.query;
         let deviceId: number | undefined;

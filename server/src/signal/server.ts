@@ -71,7 +71,7 @@ export class SignalServer implements SignalControl {
     this.timers.push(every(ctx.cfg.tunables.pendingCheckMs, () => void this.sweepPending()));
     this.stopEvents = ctx.stores.sessionEvents.consume(async (ev) => {
       if (ev.type === 'paired') this.activeSessions++;
-      else this.activeSessions = Math.max(0, this.activeSessions - 1);
+      else if (ev.type === 'ended') this.activeSessions = Math.max(0, this.activeSessions - 1);
       ctx.collector.observeSessions(this.activeSessions);
       ctx.m.relaySessions.set(this.activeSessions);
       // 数据库暂时不可用时进补写队列按序重试，不能丢（否则会话状态卡住、字节数记不上）

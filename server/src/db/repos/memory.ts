@@ -26,6 +26,9 @@ import {
   type SessionRecord,
   type SessionsRepo,
   type StatsRepo,
+  type DeviceTraffic,
+  type TrafficDelta,
+  type TrafficRepo,
 } from './types.js';
 
 export class MemoryDevicesRepo implements DevicesRepo {
@@ -378,6 +381,30 @@ export class MemoryStatsRepo implements StatsRepo {
   }
 }
 
+export class MemoryTrafficRepo implements TrafficRepo {
+  private map = new Map<string, DeviceTraffic>();
+
+  async add(date: string, rows: TrafficDelta[]): Promise<void> {
+    for (const r of rows) {
+      const k = `${r.deviceId}|${date}`;
+      const t = this.map.get(k) ?? { deviceId: r.deviceId, statDate: date, bytesIn: 0, bytesOut: 0, framesIn: 0, framesOut: 0 };
+      t.bytesIn += r.bytesIn;
+      t.bytesOut += r.bytesOut;
+      t.framesIn += r.framesIn;
+      t.framesOut += r.framesOut;
+      this.map.set(k, t);
+    }
+  }
+
+  async range(q: { from: string; to: string; deviceId?: number; limit: number }): Promise<DeviceTraffic[]> {
+    return [...this.map.values()]
+      .filter((t) => t.statDate >= q.from && t.statDate <= q.to && (q.deviceId === undefined || t.deviceId === q.deviceId))
+      .sort((a, b) => b.statDate.localeCompare(a.statDate) || a.deviceId - b.deviceId)
+      .slice(0, q.limit)
+      .map((t) => ({ ...t }));
+  }
+}
+
 export function createMemoryRepos(): Repos {
   return {
     devices: new MemoryDevicesRepo(),
@@ -389,6 +416,7 @@ export function createMemoryRepos(): Repos {
     relayNodes: new MemoryRelayNodesRepo(),
     audit: new MemoryAuditRepo(),
     stats: new MemoryStatsRepo(),
+    traffic: new MemoryTrafficRepo(),
     async close() {},
   };
 }

@@ -103,13 +103,18 @@ export interface SessionTracker {
 
 /** 中继 -> 信令的会话事件 */
 export interface RelaySessionEvent {
-  type: 'paired' | 'ended';
+  /** traffic：一段时间内的流量增量（不是累计），中继每 30 秒和会话结束时各发一次 */
+  type: 'paired' | 'ended' | 'traffic';
   sid: string;
   node: string;
   /** ended 时的原因：pair_timeout | closed | quota | shutdown | protocol | stale */
   reason?: string;
+  /** ended 时是整个会话的累计值，traffic 时是增量 */
   bytesC2h?: number;
   bytesH2c?: number;
+  /** 仅 traffic：增量帧数 */
+  framesC2h?: number;
+  framesH2c?: number;
   ts: number;
 }
 
